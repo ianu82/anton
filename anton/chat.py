@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import anthropic
+
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
@@ -113,7 +115,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     from anton.llm.client import LLMClient
     from anton.skill.registry import SkillRegistry
 
-    llm_client = LLMClient.from_settings(settings)
+    # Use a mutable container so closures always see the current client
+    state: dict = {"llm_client": LLMClient.from_settings(settings)}
     registry = SkillRegistry()
 
     builtin = Path(__file__).resolve().parent.parent / settings.skills_dir
@@ -137,7 +140,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     async def _do_run_task(task: str) -> None:
         agent = Agent(
             channel=channel,
-            llm_client=llm_client,
+            llm_client=state["llm_client"],
             registry=registry,
             user_skills_dir=user_dir,
             memory=memory,
@@ -145,7 +148,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         )
         await agent.run(task)
 
-    session = ChatSession(llm_client, _do_run_task)
+    session = ChatSession(state["llm_client"], _do_run_task)
 
     console.print("[anton.muted]Chat with Anton. Type 'exit' to quit.[/]")
     console.print()
@@ -167,6 +170,18 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 reply = await session.turn(stripped)
                 console.print(f"[anton.cyan]anton>[/] {reply}")
                 console.print()
+            except anthropic.AuthenticationError:
+                console.print()
+                console.print(
+                    "[anton.error]Invalid API key. Let's set up a new one.[/]"
+                )
+                # Clear the bad key so _ensure_api_key prompts again
+                settings.anthropic_api_key = None
+                from anton.cli import _ensure_api_key
+                _ensure_api_key(settings)
+                # Rebuild the client and session with the new key
+                state["llm_client"] = LLMClient.from_settings(settings)
+                session = ChatSession(state["llm_client"], _do_run_task)
             except KeyboardInterrupt:
                 console.print()
                 break
