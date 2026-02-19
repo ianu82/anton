@@ -136,13 +136,19 @@ else
     info "    export PATH=\"${VENV_DIR}/bin:\$PATH\""
 fi
 
-# ── 5. Success message ────────────────────────────────────────────
+# ── 5. Ensure PATH is active in current session ───────────────────
+case ":$PATH:" in
+    *":$LOCAL_BIN:"*) ;;
+    *) export PATH="$LOCAL_BIN:$PATH" ;;
+esac
+
+# ── 6. Success message ────────────────────────────────────────────
 info ""
 info "${GREEN}  ✓ anton installed successfully!${RESET}"
 info ""
 info "  Get started:"
-info "    anton                     ${CYAN}# Dashboard${RESET}"
-info "    anton run \"fix the tests\" ${CYAN}# Run a task${RESET}"
+info "    anton                                          ${CYAN}# Dashboard${RESET}"
+info "    anton run \"analyze last month's sales data\"    ${CYAN}# Give Anton a task${RESET}"
 info ""
 info "  Config: ~/.anton/.env"
 info ""
