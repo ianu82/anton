@@ -31,9 +31,14 @@ console = _make_console()
 def main(ctx: typer.Context) -> None:
     """Anton — autonomous coding copilot."""
     if ctx.invoked_subcommand is None:
-        from anton.channel.branding import render_dashboard
+        from anton.channel.branding import render_banner
+        from anton.chat import run_chat
+        from anton.config.settings import AntonSettings
 
-        render_dashboard(console)
+        settings = AntonSettings()
+        render_banner(console)
+        _ensure_api_key(settings)
+        run_chat(console, settings)
 
 
 def _has_api_key(settings) -> bool:
@@ -107,6 +112,14 @@ def _ensure_api_key(settings) -> None:
     console.print()
     console.print(f"[anton.success]Saved to {env_file}[/]")
     console.print()
+
+
+@app.command("dashboard")
+def dashboard() -> None:
+    """Show the Anton status dashboard."""
+    from anton.channel.branding import render_dashboard
+
+    render_dashboard(console)
 
 
 @app.command()
