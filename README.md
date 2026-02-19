@@ -16,10 +16,10 @@
 Anton is your coworker that's excellent at many things — research, email, lead gen, data work, and yes, coding too.
 
 ```
-anton run "find 50 leads in the fintech space and put them in a spreadsheet"
+anton run "cross-reference our postgres customers table with the revenue spreadsheet and flag mismatches"
 anton run "draft responses to the 12 unread support emails"
-anton run "research competitors in the AI agent space and summarize findings"
-anton run "build a script that syncs our CRM with the billing system"
+anton run "pull last quarter's sales data, combine it with the marketing spend sheet, and show me what's working"
+anton run "analyze churn patterns in the database and give me the top 5 insights"
 ```
 
 You don't write code. You don't manage prompts. You just tell Anton what you need done — the same way you'd ask a coworker — and he figures out the rest. If it needs code, he writes it. If it needs research, he does it. If it needs both, he handles that too.
@@ -64,9 +64,9 @@ That's it. Anton takes it from there.
 
 If you've seen *Silicon Valley*, you know.
 
-Gilfoyle's AI — **Son of Anton** — was an autonomous system that wrote code, made its own decisions, and occasionally went rogue in spectacular fashion. It was named after [Anton LaVey](https://en.wikipedia.org/wiki/Anton_LaVey), because of course Gilfoyle would name his creation after the founder of the Church of Satan.
+Gilfoyle's AI — **Son of Anton** — was an autonomous system that wrote code, made its own decisions, and occasionally went rogue in spectacular fashion.
 
-We kept the name. Dropped the "Son of." Same energy — an autonomous agent that writes code and thinks for itself. Hopefully with fewer satanic undertones. No promises.
+We kept the name. Dropped the "Son of." Same energy — an autonomous agent that thinks for itself and gets work done.
 
 ## License
 
