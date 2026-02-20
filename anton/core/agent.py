@@ -21,6 +21,7 @@ from anton.skill.spec import SkillSpec
 
 if TYPE_CHECKING:
     from anton.channel.base import Channel
+    from anton.context.self_awareness import SelfAwarenessContext
     from anton.core.planner import Plan, PlanStep
     from anton.llm.client import LLMClient
     from anton.memory.learnings import LearningStore
@@ -38,6 +39,8 @@ class Agent:
         user_skills_dir: Path | None = None,
         memory: SessionStore | None = None,
         learnings: LearningStore | None = None,
+        self_awareness: SelfAwarenessContext | None = None,
+        skill_dirs: list[Path] | None = None,
     ) -> None:
         self._channel = channel
         self._llm = llm_client
@@ -45,6 +48,8 @@ class Agent:
         self._user_skills_dir = user_skills_dir
         self._memory = memory
         self._learnings = learnings
+        self._self_awareness = self_awareness
+        self._skill_dirs = skill_dirs
         self._bus = EventBus()
         self._estimator = TimeEstimator()
         self._planner = Planner(llm_client, registry)
@@ -70,8 +75,16 @@ class Agent:
                 )
                 from anton.memory.context import MemoryContext
 
-                ctx_builder = MemoryContext(self._memory, self._learnings)
+                ctx_builder = MemoryContext(
+                    self._memory, self._learnings, skill_dirs=self._skill_dirs
+                )
                 memory_context = ctx_builder.build(task)
+
+            # Inject self-awareness context
+            if self._self_awareness is not None:
+                sa_context = self._self_awareness.build_prompt_section()
+                if sa_context:
+                    memory_context = (memory_context + "\n" + sa_context) if memory_context else sa_context
 
             # Phase 1: Skill discovery
             await self._bus.publish(

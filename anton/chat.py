@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from anton.config.settings import AntonSettings
+    from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
 
 EXECUTE_TASK_TOOL = {
@@ -39,6 +40,37 @@ EXECUTE_TASK_TOOL = {
             },
         },
         "required": ["task"],
+    },
+}
+
+UPDATE_CONTEXT_TOOL = {
+    "name": "update_context",
+    "description": (
+        "Update self-awareness context files when you learn something important "
+        "about the project or workspace. Use this to persist knowledge for future sessions."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "updates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Filename like 'project-overview.md'",
+                        },
+                        "content": {
+                            "type": ["string", "null"],
+                            "description": "New content, or null to delete the file",
+                        },
+                    },
+                    "required": ["file", "content"],
+                },
+            },
+        },
+        "required": ["updates"],
     },
 }
 
@@ -62,26 +94,73 @@ class _ProgressChannel(Channel):
 class ChatSession:
     """Manages a multi-turn conversation with tool-call delegation."""
 
-    def __init__(self, llm_client: LLMClient, run_task, *, run_task_stream=None) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        run_task,
+        *,
+        run_task_stream=None,
+        self_awareness: SelfAwarenessContext | None = None,
+        runtime_context: str = "",
+    ) -> None:
         self._llm = llm_client
         self._run_task = run_task
         self._run_task_stream = run_task_stream
+        self._self_awareness = self_awareness
+        self._runtime_context = runtime_context
         self._history: list[dict] = []
 
     @property
     def history(self) -> list[dict]:
         return self._history
 
+    def _build_system_prompt(self) -> str:
+        prompt = CHAT_SYSTEM_PROMPT.format(runtime_context=self._runtime_context)
+        if self._self_awareness is not None:
+            sa_section = self._self_awareness.build_prompt_section()
+            if sa_section:
+                prompt += sa_section
+        return prompt
+
+    def _build_tools(self) -> list[dict]:
+        tools = [EXECUTE_TASK_TOOL]
+        if self._self_awareness is not None:
+            tools.append(UPDATE_CONTEXT_TOOL)
+        return tools
+
+    def _handle_update_context(self, tc_input: dict) -> str:
+        """Process an update_context tool call and return a result string."""
+        if self._self_awareness is None:
+            return "Context updates not available."
+
+        from anton.context.self_awareness import ContextUpdate
+
+        raw_updates = tc_input.get("updates", [])
+        updates = [
+            ContextUpdate(file=u["file"], content=u.get("content"))
+            for u in raw_updates
+            if isinstance(u, dict) and "file" in u
+        ]
+
+        if not updates:
+            return "No valid updates provided."
+
+        actions = self._self_awareness.apply_updates(updates)
+        return "Context updated: " + "; ".join(actions)
+
     async def turn(self, user_input: str) -> str:
         self._history.append({"role": "user", "content": user_input})
 
+        system = self._build_system_prompt()
+        tools = self._build_tools()
+
         response = await self._llm.plan(
-            system=CHAT_SYSTEM_PROMPT,
+            system=system,
             messages=self._history,
-            tools=[EXECUTE_TASK_TOOL],
+            tools=tools,
         )
 
-        # Handle tool calls (execute_task)
+        # Handle tool calls (execute_task, update_context)
         while response.tool_calls:
             # Build assistant message with content blocks
             assistant_content: list[dict] = []
@@ -106,6 +185,8 @@ class ChatSession:
                         result_text = f"Task completed: {task_desc}"
                     except Exception as exc:
                         result_text = f"Task failed: {exc}"
+                elif tc.name == "update_context":
+                    result_text = self._handle_update_context(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -119,9 +200,9 @@ class ChatSession:
 
             # Get follow-up from LLM
             response = await self._llm.plan(
-                system=CHAT_SYSTEM_PROMPT,
+                system=system,
                 messages=self._history,
-                tools=[EXECUTE_TASK_TOOL],
+                tools=tools,
             )
 
         # Text-only response
@@ -138,12 +219,15 @@ class ChatSession:
 
     async def _stream_and_handle_tools(self) -> AsyncIterator[StreamEvent]:
         """Stream one LLM call, handle tool loops, yield all events."""
+        system = self._build_system_prompt()
+        tools = self._build_tools()
+
         response: StreamComplete | None = None
 
         async for event in self._llm.plan_stream(
-            system=CHAT_SYSTEM_PROMPT,
+            system=system,
             messages=self._history,
-            tools=[EXECUTE_TASK_TOOL],
+            tools=tools,
         ):
             yield event
             if isinstance(event, StreamComplete):
@@ -183,6 +267,8 @@ class ChatSession:
                         result_text = f"Task completed: {task_desc}"
                     except Exception as exc:
                         result_text = f"Task failed: {exc}"
+                elif tc.name == "update_context":
+                    result_text = self._handle_update_context(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -197,9 +283,9 @@ class ChatSession:
             # Stream follow-up
             response = None
             async for event in self._llm.plan_stream(
-                system=CHAT_SYSTEM_PROMPT,
+                system=system,
                 messages=self._history,
-                tools=[EXECUTE_TASK_TOOL],
+                tools=tools,
             ):
                 yield event
                 if isinstance(event, StreamComplete):
@@ -223,6 +309,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     from pathlib import Path
 
     from anton.channel.terminal import CLIChannel
+    from anton.context.self_awareness import SelfAwarenessContext
     from anton.core.agent import Agent
     from anton.llm.client import LLMClient
     from anton.skill.registry import SkillRegistry
@@ -234,7 +321,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     builtin = Path(__file__).resolve().parent.parent / settings.skills_dir
     registry.discover(builtin)
 
-    user_dir = Path(settings.user_skills_dir).expanduser()
+    user_dir = Path(settings.user_skills_dir)
     registry.discover(user_dir)
 
     memory = None
@@ -243,11 +330,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         from anton.memory.learnings import LearningStore
         from anton.memory.store import SessionStore
 
-        memory_dir = Path(settings.memory_dir).expanduser()
+        memory_dir = Path(settings.memory_dir)
         memory = SessionStore(memory_dir)
         learnings_store = LearningStore(memory_dir)
 
     channel = CLIChannel()
+
+    # Self-awareness context
+    self_awareness = SelfAwarenessContext(Path(settings.context_dir))
 
     async def _do_run_task(task: str) -> None:
         agent = Agent(
@@ -257,6 +347,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
             user_skills_dir=user_dir,
             memory=memory,
             learnings=learnings_store,
+            self_awareness=self_awareness,
+            skill_dirs=[builtin, user_dir],
         )
         await agent.run(task)
 
@@ -270,6 +362,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
             user_skills_dir=user_dir,
             memory=memory,
             learnings=learnings_store,
+            self_awareness=self_awareness,
+            skill_dirs=[builtin, user_dir],
         )
         agent_task = asyncio.create_task(agent.run(task))
 
@@ -315,8 +409,19 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     pass
             raise
 
+    # Build runtime context so the LLM knows what it's running on
+    runtime_context = (
+        f"- Provider: {settings.planning_provider}\n"
+        f"- Planning model: {settings.planning_model}\n"
+        f"- Coding model: {settings.coding_model}"
+    )
+
     session = ChatSession(
-        state["llm_client"], _do_run_task, run_task_stream=_do_run_task_stream
+        state["llm_client"],
+        _do_run_task,
+        run_task_stream=_do_run_task_stream,
+        self_awareness=self_awareness,
+        runtime_context=runtime_context,
     )
 
     console.print("[anton.muted]Chat with Anton. Type 'exit' to quit.[/]")
@@ -373,9 +478,17 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 from anton.cli import _ensure_api_key
                 _ensure_api_key(settings)
                 state["llm_client"] = LLMClient.from_settings(settings)
+                # Rebuild runtime context in case provider changed
+                runtime_context = (
+                    f"- Provider: {settings.planning_provider}\n"
+                    f"- Planning model: {settings.planning_model}\n"
+                    f"- Coding model: {settings.coding_model}"
+                )
                 session = ChatSession(
                     state["llm_client"], _do_run_task,
                     run_task_stream=_do_run_task_stream,
+                    self_awareness=self_awareness,
+                    runtime_context=runtime_context,
                 )
             except KeyboardInterrupt:
                 display.abort()

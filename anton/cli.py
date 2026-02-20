@@ -27,15 +27,31 @@ def _make_console() -> Console:
 console = _make_console()
 
 
+def _get_settings(ctx: typer.Context):
+    """Retrieve the resolved AntonSettings from context."""
+    return ctx.obj["settings"]
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    folder: str | None = typer.Option(
+        None, "--folder", "-f", help="Workspace folder (defaults to cwd)"
+    ),
+) -> None:
     """Anton — autonomous coding copilot."""
+    from anton.config.settings import AntonSettings
+
+    settings = AntonSettings()
+    settings.resolve_workspace(folder)
+
+    ctx.ensure_object(dict)
+    ctx.obj["settings"] = settings
+
     if ctx.invoked_subcommand is None:
         from anton.channel.branding import render_banner
         from anton.chat import run_chat
-        from anton.config.settings import AntonSettings
 
-        settings = AntonSettings()
         render_banner(console)
         _ensure_api_key(settings)
         run_chat(console, settings)
@@ -84,8 +100,8 @@ def _ensure_api_key(settings) -> None:
 
     api_key = api_key.strip()
 
-    # Save to ~/.anton/.env for persistence
-    env_dir = Path("~/.anton").expanduser()
+    # Save to workspace .anton/.env for persistence
+    env_dir = Path(settings.workspace_path) / ".anton"
     env_dir.mkdir(parents=True, exist_ok=True)
     env_file = env_dir / ".env"
 
@@ -124,23 +140,29 @@ def dashboard() -> None:
 
 @app.command()
 def run(
+    ctx: typer.Context,
     task: str = typer.Argument(..., help="The task for Anton to complete"),
 ) -> None:
     """Give Anton a task and let it work autonomously."""
     from anton.channel.branding import render_banner
 
+    settings = _get_settings(ctx)
     render_banner(console)
-    asyncio.run(_run_task(task))
+    asyncio.run(_run_task(task, settings))
 
 
-async def _run_task(task: str) -> None:
+async def _run_task(task: str, settings=None) -> None:
     from anton.channel.terminal import CLIChannel
     from anton.config.settings import AntonSettings
+    from anton.context.self_awareness import SelfAwarenessContext
     from anton.core.agent import Agent
     from anton.llm.client import LLMClient
     from anton.skill.registry import SkillRegistry
 
-    settings = AntonSettings()
+    if settings is None:
+        settings = AntonSettings()
+        settings.resolve_workspace()
+
     _ensure_api_key(settings)
     channel = CLIChannel()
 
@@ -153,7 +175,7 @@ async def _run_task(task: str) -> None:
         registry.discover(builtin)
 
         # Discover user skills
-        user_dir = Path(settings.user_skills_dir).expanduser()
+        user_dir = Path(settings.user_skills_dir)
         registry.discover(user_dir)
 
         # Set up memory if enabled
@@ -163,9 +185,12 @@ async def _run_task(task: str) -> None:
             from anton.memory.learnings import LearningStore
             from anton.memory.store import SessionStore
 
-            memory_dir = Path(settings.memory_dir).expanduser()
+            memory_dir = Path(settings.memory_dir)
             memory = SessionStore(memory_dir)
             learnings_store = LearningStore(memory_dir)
+
+        # Self-awareness context
+        self_awareness = SelfAwarenessContext(Path(settings.context_dir))
 
         agent = Agent(
             channel=channel,
@@ -174,6 +199,8 @@ async def _run_task(task: str) -> None:
             user_skills_dir=user_dir,
             memory=memory,
             learnings=learnings_store,
+            self_awareness=self_awareness,
+            skill_dirs=[builtin, user_dir],
         )
         await agent.run(task)
     finally:
@@ -181,18 +208,17 @@ async def _run_task(task: str) -> None:
 
 
 @app.command("skills")
-def list_skills() -> None:
+def list_skills(ctx: typer.Context) -> None:
     """List all discovered skills."""
-    from anton.config.settings import AntonSettings
     from anton.skill.registry import SkillRegistry
 
-    settings = AntonSettings()
+    settings = _get_settings(ctx)
     registry = SkillRegistry()
 
     builtin = Path(__file__).resolve().parent.parent / settings.skills_dir
     registry.discover(builtin)
 
-    user_dir = Path(settings.user_skills_dir).expanduser()
+    user_dir = Path(settings.user_skills_dir)
     registry.discover(user_dir)
 
     skills = registry.list_all()
@@ -216,13 +242,12 @@ def list_skills() -> None:
 
 
 @app.command("sessions")
-def list_sessions() -> None:
+def list_sessions(ctx: typer.Context) -> None:
     """List recent sessions."""
-    from anton.config.settings import AntonSettings
     from anton.memory.store import SessionStore
 
-    settings = AntonSettings()
-    memory_dir = Path(settings.memory_dir).expanduser()
+    settings = _get_settings(ctx)
+    memory_dir = Path(settings.memory_dir)
     store = SessionStore(memory_dir)
 
     sessions = store.list_sessions()
@@ -247,14 +272,14 @@ def list_sessions() -> None:
 
 @app.command("session")
 def show_session(
+    ctx: typer.Context,
     session_id: str = typer.Argument(..., help="Session ID to display"),
 ) -> None:
     """Show session details and summary."""
-    from anton.config.settings import AntonSettings
     from anton.memory.store import SessionStore
 
-    settings = AntonSettings()
-    memory_dir = Path(settings.memory_dir).expanduser()
+    settings = _get_settings(ctx)
+    memory_dir = Path(settings.memory_dir)
     store = SessionStore(memory_dir)
 
     session = store.get_session(session_id)
@@ -272,13 +297,12 @@ def show_session(
 
 
 @app.command("learnings")
-def list_learnings() -> None:
+def list_learnings(ctx: typer.Context) -> None:
     """List all learnings with summaries."""
-    from anton.config.settings import AntonSettings
     from anton.memory.learnings import LearningStore
 
-    settings = AntonSettings()
-    memory_dir = Path(settings.memory_dir).expanduser()
+    settings = _get_settings(ctx)
+    memory_dir = Path(settings.memory_dir)
     store = LearningStore(memory_dir)
 
     items = store.list_all()
@@ -344,6 +368,26 @@ def list_channels() -> None:
         )
 
     console.print(table)
+
+
+@app.command("minion")
+def minion_cmd(
+    task: str = typer.Argument(..., help="Task for the minion to execute"),
+    folder: str | None = typer.Option(
+        None, "--folder", "-f", help="Workspace folder for the minion"
+    ),
+) -> None:
+    """Spawn a minion to work on a task in a given folder."""
+    console.print("[dim]Minion system is not yet implemented.[/]")
+    console.print(f"[dim]  task: {task}[/]")
+    if folder:
+        console.print(f"[dim]  folder: {folder}[/]")
+
+
+@app.command("minions")
+def list_minions() -> None:
+    """List tracked minions."""
+    console.print("[dim]No minions tracked.[/]")
 
 
 @app.command("version")
