@@ -97,6 +97,21 @@ anton/
 └── events/             # Async event bus for status updates
 ```
 
+## Scratchpad
+
+Anton includes a persistent Python scratchpad — a notebook-style environment it drives programmatically. This makes Anton particularly great at **data analysis tasks**: counting, parsing, transforming, aggregating, and exploring datasets with real computation instead of LLM guesswork.
+
+When you ask Anton to analyze data, it writes and executes Python in the scratchpad, building up state across cells exactly like a Jupyter notebook. Variables, imports, and intermediate results persist across steps. When you ask "how did you solve that?", it dumps a clean notebook-style summary of its work — code blocks, truncated output samples, error summaries — so you can follow the reasoning without wading through raw logs.
+
+What the scratchpad handles well:
+- **Data analysis** — Load a CSV, filter rows, compute aggregates, pivot tables, plot distributions
+- **Text processing** — Parse logs, extract patterns, count tokens, transform formats
+- **Math and counting** — Character counts, statistical calculations, combinatorics
+- **Multi-step exploration** — Build up understanding incrementally, inspect intermediate results
+- **LLM-powered computation** — Call `get_llm()` inside scratchpad code for AI-assisted analysis (classification, extraction, summarization) over your data
+
+The scratchpad also has access to Anton's skills (`run_skill()`) and an `agentic_loop()` for multi-step AI workflows — so it can orchestrate tool-calling LLM loops right inside the notebook.
+
 ## Minions
 
 Minions are background workers. Anton handles the conversation, but when a task is long-running, independent, or recurring, it spawns a minion to handle it separately.

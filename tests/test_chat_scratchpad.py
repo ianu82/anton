@@ -144,6 +144,39 @@ class TestScratchpadRemoveViaChat:
             await session.close()
 
 
+class TestScratchpadDumpViaChat:
+    async def test_scratchpad_dump_via_chat(self):
+        """dump action flows through chat, returns markdown with code fences."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(
+            side_effect=[
+                # First: exec some code
+                _scratchpad_response("Running.", "exec", "main", "print(42)"),
+                # Second: dump the scratchpad
+                _scratchpad_response("Here's your work.", "dump", "main"),
+                # Final text reply
+                _text_response("Done!"),
+            ]
+        )
+        mock_run = AsyncMock()
+
+        session = ChatSession(mock_llm, mock_run)
+        try:
+            await session.turn("show me my work")
+
+            tool_result_msgs = [
+                m for m in session.history
+                if m["role"] == "user" and isinstance(m["content"], list)
+            ]
+            assert len(tool_result_msgs) == 2
+            dump_content = tool_result_msgs[1]["content"][0]["content"]
+            assert "```python" in dump_content
+            assert "## Scratchpad: main" in dump_content
+            assert "42" in dump_content
+        finally:
+            await session.close()
+
+
 class _FakeAsyncIter:
     """Wraps items into an async iterator for mocking plan_stream."""
 

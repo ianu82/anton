@@ -197,6 +197,105 @@ class TestScratchpadManager:
         assert len(mgr.list_pads()) == 0
 
 
+class TestScratchpadRenderNotebook:
+    async def test_render_notebook_basic(self):
+        """Produces markdown with code blocks and output."""
+        pad = Scratchpad(name="main")
+        await pad.start()
+        try:
+            await pad.execute("x = 1")
+            await pad.execute("print(x + 1)")
+            md = pad.render_notebook()
+            assert "## Scratchpad: main (2 cells)" in md
+            assert "### Cell 1" in md
+            assert "```python" in md
+            assert "x = 1" in md
+            assert "**Output:**" in md
+            assert "2" in md
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_empty(self):
+        """Empty pad returns a message."""
+        pad = Scratchpad(name="empty")
+        await pad.start()
+        try:
+            md = pad.render_notebook()
+            assert "no cells" in md.lower()
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_skips_empty_cells(self):
+        """Whitespace-only cells are filtered out."""
+        pad = Scratchpad(name="gaps")
+        await pad.start()
+        try:
+            await pad.execute("print('a')")
+            await pad.execute("   \n  ")
+            await pad.execute("print('b')")
+            md = pad.render_notebook()
+            assert "(2 cells)" in md
+            assert "Cell 2" not in md  # whitespace cell skipped
+            assert "Cell 1" in md
+            assert "Cell 3" in md
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_truncates_long_output(self):
+        """Long stdout shows 'more lines' indicator."""
+        pad = Scratchpad(name="long")
+        await pad.start()
+        try:
+            await pad.execute("for i in range(50): print(i)")
+            md = pad.render_notebook()
+            assert "more lines" in md
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_error_summary(self):
+        """Only last traceback line shown, not full trace."""
+        pad = Scratchpad(name="err")
+        await pad.start()
+        try:
+            await pad.execute("raise ValueError('boom')")
+            md = pad.render_notebook()
+            assert "**Error:**" in md
+            assert "ValueError: boom" in md
+            # Full traceback details should NOT be present
+            assert "Traceback" not in md
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_hides_stderr_without_error(self):
+        """Warnings (stderr only, no error) are filtered out of output sections."""
+        pad = Scratchpad(name="warn")
+        await pad.start()
+        try:
+            await pad.execute("import sys; sys.stderr.write('some warning\\n')")
+            md = pad.render_notebook()
+            # stderr content should NOT appear as output
+            assert "**Output:**" not in md
+            assert "**Error:**" not in md
+        finally:
+            await pad.close()
+
+    async def test_truncate_output_lines(self):
+        """Respects line limit."""
+        text = "\n".join(f"line {i}" for i in range(50))
+        result = Scratchpad._truncate_output(text, max_lines=10)
+        assert "line 0" in result
+        assert "line 9" in result
+        assert "line 10" not in result
+        assert "(40 more lines)" in result
+
+    async def test_truncate_output_chars(self):
+        """Respects char limit."""
+        text = "\n".join("x" * 80 for _ in range(5))
+        result = Scratchpad._truncate_output(text, max_lines=100, max_chars=200)
+        assert "(truncated)" in result
+        assert len(result) < len(text)
+
+
 class TestScratchpadEnvironment:
     async def test_env_vars_accessible(self, monkeypatch):
         """Secrets from .anton/.env (in os.environ) are accessible in scratchpad."""

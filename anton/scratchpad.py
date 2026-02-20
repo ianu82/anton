@@ -413,6 +413,61 @@ class Scratchpad:
                 parts.append("(no output)")
         return "\n".join(parts)
 
+    @staticmethod
+    def _truncate_output(text: str, max_lines: int = 20, max_chars: int = 2000) -> str:
+        """Truncate output to *max_lines* / *max_chars*, whichever is shorter."""
+        lines = text.split("\n")
+        # Apply line limit
+        if len(lines) > max_lines:
+            kept = "\n".join(lines[:max_lines])
+            remaining = len(lines) - max_lines
+            return kept + f"\n... ({remaining} more lines)"
+        # Apply char limit (don't cut mid-line)
+        if len(text) > max_chars:
+            total = 0
+            kept_lines: list[str] = []
+            for line in lines:
+                if total + len(line) + 1 > max_chars and kept_lines:
+                    break
+                kept_lines.append(line)
+                total += len(line) + 1
+            return "\n".join(kept_lines) + "\n... (truncated)"
+        return text
+
+    def render_notebook(self) -> str:
+        """Return a clean markdown notebook-style summary of all cells."""
+        # Filter out empty/whitespace-only cells
+        numbered: list[tuple[int, Cell]] = []
+        idx = 0
+        for cell in self.cells:
+            idx += 1
+            if not cell.code.strip():
+                continue
+            numbered.append((idx, cell))
+
+        if not numbered:
+            return f"Scratchpad '{self.name}' has no cells."
+
+        parts: list[str] = [f"## Scratchpad: {self.name} ({len(numbered)} cells)"]
+
+        for i, (num, cell) in enumerate(numbered):
+            parts.append(f"\n### Cell {num}")
+            parts.append(f"```python\n{cell.code}\n```")
+
+            if cell.error:
+                # Show only the last traceback line
+                last_line = cell.error.strip().split("\n")[-1]
+                parts.append(f"\n**Error:** `{last_line}`")
+            elif cell.stdout:
+                truncated = self._truncate_output(cell.stdout.rstrip("\n"))
+                parts.append(f"\n**Output:**\n```\n{truncated}\n```")
+            # Hide stderr unless accompanied by an error (already handled above)
+
+            if i < len(numbered) - 1:
+                parts.append("\n---")
+
+        return "\n".join(parts)
+
     async def reset(self) -> None:
         """Kill the process, clear cells, restart."""
         await self.close()

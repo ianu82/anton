@@ -112,7 +112,8 @@ SCRATCHPAD_TOOL = {
         "- exec: Run code in the scratchpad (creates it if needed)\n"
         "- view: See all cells and their outputs\n"
         "- reset: Restart the process, clearing all state\n"
-        "- remove: Kill the scratchpad\n\n"
+        "- remove: Kill the scratchpad\n"
+        "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n\n"
         "Use print() to produce output. The Python standard library is available.\n"
         "run_skill(name, **kwargs) is available in code to call Anton skills.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
@@ -127,7 +128,7 @@ SCRATCHPAD_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove"]},
+            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove", "dump"]},
             "name": {"type": "string", "description": "Scratchpad name"},
             "code": {
                 "type": "string",
@@ -303,6 +304,12 @@ class ChatSession:
 
         elif action == "remove":
             return await self._scratchpads.remove(name)
+
+        elif action == "dump":
+            pad = self._scratchpads._pads.get(name)
+            if pad is None:
+                return f"No scratchpad named '{name}'."
+            return pad.render_notebook()
 
         else:
             return f"Unknown scratchpad action: {action}"
