@@ -204,8 +204,37 @@ class ChatSession:
                 prompt += md_context
         return prompt
 
+    # Packages the LLM is most likely to care about when writing scratchpad code.
+    _NOTABLE_PACKAGES: set[str] = {
+        "numpy", "pandas", "matplotlib", "seaborn", "scipy", "scikit-learn",
+        "requests", "httpx", "aiohttp", "beautifulsoup4", "lxml",
+        "pillow", "sympy", "networkx", "sqlalchemy", "pydantic",
+        "rich", "tqdm", "click", "fastapi", "flask", "django",
+        "openai", "anthropic", "tiktoken", "transformers", "torch",
+        "polars", "pyarrow", "openpyxl", "xlsxwriter",
+        "plotly", "bokeh", "altair",
+        "pytest", "hypothesis",
+        "yaml", "pyyaml", "toml", "tomli", "tomllib",
+        "jinja2", "markdown", "pygments",
+        "cryptography", "paramiko", "boto3",
+    }
+
     def _build_tools(self) -> list[dict]:
-        tools = [EXECUTE_TASK_TOOL, SCRATCHPAD_TOOL]
+        scratchpad_tool = dict(SCRATCHPAD_TOOL)
+        pkg_list = self._scratchpads._available_packages
+        if pkg_list:
+            notable = sorted(
+                p for p in pkg_list
+                if p.lower() in self._NOTABLE_PACKAGES
+            )
+            if notable:
+                pkg_line = ", ".join(notable)
+                extra = f"\n\nInstalled packages ({len(pkg_list)} total, notable: {pkg_line})."
+            else:
+                extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
+            scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
+
+        tools = [EXECUTE_TASK_TOOL, scratchpad_tool]
         if self._self_awareness is not None:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:

@@ -513,6 +513,14 @@ class ScratchpadManager:
         self._skill_dirs: list[Path] = skill_dirs or []
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
+        self._available_packages: list[str] = self.probe_packages()
+
+    @staticmethod
+    def probe_packages() -> list[str]:
+        """Return sorted list of installed package distribution names."""
+        from importlib.metadata import distributions
+
+        return sorted({d.metadata["Name"] for d in distributions()})
 
     async def get_or_create(self, name: str) -> Scratchpad:
         """Return existing pad or create + start a new one."""
