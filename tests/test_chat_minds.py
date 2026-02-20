@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -468,3 +469,227 @@ class TestMindsStreaming:
             assert "Acme Corp" in result_content
         finally:
             await session.close()
+
+
+class TestMindsKnowledgeInjection:
+    async def test_connected_mind_appears_in_system_prompt(self, tmp_path):
+        """When .anton/minds/X.md exists, its content is injected into the system prompt."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        minds_dir = tmp_path / ".anton" / "minds"
+        minds_dir.mkdir(parents=True)
+        (minds_dir / "sales.md").write_text("This mind has sales data with customers and orders.")
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        try:
+            await session.turn("hello")
+            call_kwargs = mock_llm.plan.call_args
+            system = call_kwargs.kwargs.get("system", "")
+            assert "## Connected Minds" in system
+            assert "### sales" in system
+            assert "sales data with customers and orders" in system
+        finally:
+            await session.close()
+
+    async def test_no_minds_dir_means_no_injection(self):
+        """When there's no .anton/minds directory, no mind sections are injected."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
+        mock_run = AsyncMock()
+
+        session = ChatSession(mock_llm, mock_run, minds_api_key="test-key")
+        try:
+            await session.turn("hello")
+            call_kwargs = mock_llm.plan.call_args
+            system = call_kwargs.kwargs.get("system", "")
+            # The "## Connected Minds" section header should NOT appear
+            assert "## Connected Minds" not in system
+        finally:
+            await session.close()
+
+    async def test_empty_minds_dir_means_no_injection(self, tmp_path):
+        """When .anton/minds exists but is empty, nothing is injected."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        (tmp_path / ".anton" / "minds").mkdir(parents=True)
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        try:
+            await session.turn("hello")
+            call_kwargs = mock_llm.plan.call_args
+            system = call_kwargs.kwargs.get("system", "")
+            assert "## Connected Minds" not in system
+        finally:
+            await session.close()
+
+
+class TestMindsConnect:
+    async def test_connect_writes_llm_summary(self, tmp_path):
+        """connect fetches mind info, catalogs datasources, gets LLM summary, writes file."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("This mind provides sales analytics."))
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+
+        with patch.object(
+            session._minds, "get_mind", new_callable=AsyncMock,
+            return_value={"name": "sales", "datasources": ["sales_db"]},
+        ), patch.object(
+            session._minds, "catalog", new_callable=AsyncMock,
+            return_value="## customers\n  - id (integer)\n  - name (varchar)",
+        ):
+            await session._handle_minds_connect("sales", console)
+
+        md_file = tmp_path / ".anton" / "minds" / "sales.md"
+        assert md_file.exists()
+        content = md_file.read_text()
+        assert "sales analytics" in content
+
+        await session.close()
+
+    async def test_connect_fallback_on_llm_failure(self, tmp_path):
+        """When LLM fails, raw catalog is stored as fallback."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(side_effect=Exception("LLM unavailable"))
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+
+        with patch.object(
+            session._minds, "get_mind", new_callable=AsyncMock,
+            return_value={"name": "sales", "datasources": ["db1"]},
+        ), patch.object(
+            session._minds, "catalog", new_callable=AsyncMock,
+            return_value="## orders\n  - id (integer)",
+        ):
+            await session._handle_minds_connect("sales", console)
+
+        md_file = tmp_path / ".anton" / "minds" / "sales.md"
+        assert md_file.exists()
+        content = md_file.read_text()
+        assert "orders" in content
+
+        await session.close()
+
+    async def test_connect_rejects_invalid_name(self, tmp_path):
+        """Invalid mind names are rejected."""
+        mock_llm = AsyncMock()
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+
+        await session._handle_minds_connect("bad/name", console)
+        console.print.assert_called()
+        assert not (tmp_path / ".anton" / "minds").exists()
+
+        await session.close()
+
+    async def test_connect_without_minds_configured(self, tmp_path):
+        """Connect fails gracefully when minds not configured."""
+        mock_llm = AsyncMock()
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+
+        session = ChatSession(mock_llm, mock_run, workspace=workspace)
+        console = MagicMock()
+
+        await session._handle_minds_connect("sales", console)
+        call_args = [str(c) for c in console.print.call_args_list]
+        assert any("not configured" in s.lower() or "setup" in s.lower() for s in call_args)
+
+        await session.close()
+
+
+class TestMindsDisconnect:
+    def test_disconnect_removes_file(self, tmp_path):
+        """Disconnect removes the mind's knowledge file."""
+        mock_llm = AsyncMock()
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+
+        minds_dir = tmp_path / ".anton" / "minds"
+        minds_dir.mkdir(parents=True)
+        md_file = minds_dir / "sales.md"
+        md_file.write_text("Sales mind knowledge.")
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+
+        session._handle_minds_disconnect("sales", console)
+        assert not md_file.exists()
+
+    def test_disconnect_warns_when_not_connected(self, tmp_path):
+        """Disconnect warns when the mind isn't connected."""
+        mock_llm = AsyncMock()
+        mock_run = AsyncMock()
+
+        workspace = MagicMock()
+        workspace.base = tmp_path
+
+        (tmp_path / ".anton" / "minds").mkdir(parents=True)
+
+        session = ChatSession(
+            mock_llm, mock_run,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+
+        session._handle_minds_disconnect("nonexistent", console)
+        call_args = [str(c) for c in console.print.call_args_list]
+        assert any("not connected" in s.lower() for s in call_args)

@@ -208,6 +208,9 @@ csv = minds.export() → df = pd.read_csv(io.StringIO(csv)) → analyze/plot.
 into pandas for analysis. Much cleaner than parsing markdown tables.
 - Prefer export() over data() when working in the scratchpad. data() returns \
 markdown (good for chat display), export() returns CSV (good for code).
+- When connected minds are listed below (in the "Connected Minds" section), use them \
+autonomously — match the user's question domain to the right mind without asking. \
+If multiple minds could answer, pick the most specific one.
 
 CONVERSATION DISCIPLINE (critical):
 - If you ask the user a question, STOP and WAIT for their reply. Never ask a question \

@@ -132,18 +132,41 @@ class MindsClient:
             resp.raise_for_status()
             return resp.text
 
-    async def catalog(self, datasource: str) -> str:
-        """Discover tables and columns for a datasource.
+    async def get_mind(self, name: str) -> dict:
+        """Fetch metadata for a single mind.
 
-        GETs /api/v1/datasources/{datasource}/catalog and returns a
-        formatted listing of tables and their columns.
+        GETs /api/v1/minds/{name} and returns the parsed JSON dict
+        (name, datasources, model_name, etc.).
         """
         import httpx
 
         async with httpx.AsyncClient(base_url=self.base_url, timeout=60, follow_redirects=True) as client:
             resp = await client.get(
+                f"/api/v1/minds/{name}",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def catalog(self, datasource: str, *, mind: str | None = None) -> str:
+        """Discover tables and columns for a datasource.
+
+        GETs /api/v1/datasources/{datasource}/catalog and returns a
+        formatted listing of tables and their columns.
+
+        When *mind* is provided, passes ``?mind={name}`` as a query param.
+        """
+        import httpx
+
+        params: dict[str, str] = {}
+        if mind is not None:
+            params["mind"] = mind
+
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=60, follow_redirects=True) as client:
+            resp = await client.get(
                 f"/api/v1/datasources/{datasource}/catalog",
                 headers=self._headers(),
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -224,6 +247,10 @@ class SyncMindsClient:
         """Export the full result set as CSV (sync)."""
         return asyncio.run(self._client.export())
 
-    def catalog(self, datasource: str) -> str:
+    def get_mind(self, name: str) -> dict:
+        """Fetch metadata for a single mind (sync)."""
+        return asyncio.run(self._client.get_mind(name))
+
+    def catalog(self, datasource: str, *, mind: str | None = None) -> str:
         """Discover tables and columns for a datasource (sync)."""
-        return asyncio.run(self._client.catalog(datasource))
+        return asyncio.run(self._client.catalog(datasource, mind=mind))

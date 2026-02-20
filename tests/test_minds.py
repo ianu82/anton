@@ -310,6 +310,96 @@ class TestMindsClientExport:
             await client.export()
 
 
+class TestMindsClientGetMind:
+    async def test_get_mind_returns_parsed_json(self):
+        client = MindsClient(api_key="test-key")
+
+        mind_data = {
+            "name": "sales",
+            "datasources": ["sales_db"],
+            "model_name": "gpt-4",
+        }
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = mind_data
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            result = await client.get_mind("sales")
+
+        assert result == mind_data
+        call_args = mock_http_client.get.call_args
+        assert "/api/v1/minds/sales" in call_args[0][0]
+
+    async def test_get_mind_raises_on_404(self):
+        client = MindsClient(api_key="test-key")
+
+        import httpx
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.get_mind("nonexistent")
+
+
+class TestMindsClientCatalogWithMind:
+    async def test_catalog_passes_mind_param(self):
+        client = MindsClient(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = [
+            {"name": "users", "columns": [{"name": "id", "type": "integer"}]},
+        ]
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            await client.catalog("my_db", mind="sales")
+
+        call_args = mock_http_client.get.call_args
+        params = call_args[1]["params"]
+        assert params["mind"] == "sales"
+
+    async def test_catalog_omits_mind_when_none(self):
+        client = MindsClient(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            await client.catalog("my_db")
+
+        call_args = mock_http_client.get.call_args
+        params = call_args[1]["params"]
+        assert "mind" not in params
+
+
 class TestSyncMindsClient:
     def test_sync_client_initializes_inner_client(self):
         client = SyncMindsClient(api_key="test-key", base_url="https://custom.example.com")
@@ -349,5 +439,15 @@ class TestSyncMindsClient:
             client._client, "catalog", new_callable=AsyncMock, return_value="## users"
         ) as mock_catalog:
             result = client.catalog("my_db")
-        mock_catalog.assert_awaited_once_with("my_db")
+        mock_catalog.assert_awaited_once_with("my_db", mind=None)
         assert result == "## users"
+
+    def test_sync_get_mind_wraps_async(self):
+        client = SyncMindsClient(api_key="test-key")
+        mind_data = {"name": "sales", "datasources": ["db1"]}
+        with patch.object(
+            client._client, "get_mind", new_callable=AsyncMock, return_value=mind_data
+        ) as mock_get:
+            result = client.get_mind("sales")
+        mock_get.assert_awaited_once_with("sales")
+        assert result == mind_data
