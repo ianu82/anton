@@ -234,6 +234,25 @@ if _skill_dirs_raw:
     except Exception:
         pass  # Skills not available — not fatal
 
+# --- Inject get_minds() for Minds/MindsDB access from scratchpad code ---
+_minds_api_key = os.environ.get("MINDS_API_KEY", "")
+if _minds_api_key:
+    try:
+        from anton.minds import MindsClient as _MindsClient, SyncMindsClient as _SyncMindsClient
+
+        _minds_client = _SyncMindsClient(
+            api_key=_minds_api_key,
+            base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
+        )
+
+        def get_minds():
+            """Get a pre-configured Minds client for database queries."""
+            return _minds_client
+
+        namespace["get_minds"] = get_minds
+    except Exception:
+        pass  # Minds not available — not fatal
+
 # Read-execute loop
 _real_stdout = sys.stdout
 _real_stdin = sys.stdin

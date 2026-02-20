@@ -193,6 +193,22 @@ dump action — it shows a clean notebook-style summary without wasting tokens o
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
 
+MINDS (data access via MindsDB):
+- When the minds tool is available, you can query databases using natural language.
+- Minds translates your questions into SQL — you never write SQL directly.
+- Use 'ask' to get text answers, then 'data' to get raw tabular results as markdown, \
+or 'export' to get CSV.
+- Use 'catalog' to discover what tables and columns are available before asking.
+- Typical workflow: catalog -> ask -> data/export -> scratchpad (analyze/visualize).
+- Data stays in MindsDB — only results come back. This is safe for production databases.
+- get_minds() is available inside scratchpads — query databases directly from code.
+- Typical scratchpad workflow: minds = get_minds() → minds.ask(question, mind) → \
+csv = minds.export() → df = pd.read_csv(io.StringIO(csv)) → analyze/plot.
+- minds.export() returns the full result set as CSV — use this when loading data \
+into pandas for analysis. Much cleaner than parsing markdown tables.
+- Prefer export() over data() when working in the scratchpad. data() returns \
+markdown (good for chat display), export() returns CSV (good for code).
+
 CONVERSATION DISCIPLINE (critical):
 - If you ask the user a question, STOP and WAIT for their reply. Never ask a question \
 and call execute_task in the same turn — that skips the user's answer.

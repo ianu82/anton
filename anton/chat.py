@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -19,6 +20,7 @@ from anton.llm.provider import (
     StreamToolResult,
     StreamToolUseStart,
 )
+from anton.minds import MindsClient
 from anton.scratchpad import ScratchpadManager
 
 if TYPE_CHECKING:
@@ -128,7 +130,11 @@ SCRATCHPAD_TOOL = {
         "agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) "
         "runs a tool-call loop where the LLM reasons and calls your tools iteratively. "
         "handle_tool(name, inputs) -> str is a plain sync function.\n"
-        "All .anton/.env secrets are available as environment variables (os.environ)."
+        "All .anton/.env secrets are available as environment variables (os.environ).\n"
+        "get_minds() returns a pre-configured Minds client (sync) for natural language "
+        "database queries. Call minds.ask(question, mind) to query, then minds.export() "
+        "to get CSV data — perfect for pd.read_csv(io.StringIO(csv)). Also: minds.data() "
+        "for markdown tables, minds.catalog(datasource) to discover tables."
     ),
     "input_schema": {
         "type": "object",
@@ -146,6 +152,53 @@ SCRATCHPAD_TOOL = {
             },
         },
         "required": ["action", "name"],
+    },
+}
+
+
+MINDS_TOOL = {
+    "name": "minds",
+    "description": (
+        "Query databases using natural language via MindsDB. "
+        "Minds translates your questions into SQL — you never write SQL directly. "
+        "Data stays in MindsDB, only results come back.\n\n"
+        "Actions:\n"
+        "- ask: Ask a natural language question. Returns a text answer.\n"
+        "- data: Fetch raw tabular results from the last ask (as a markdown table). "
+        "Call this after ask when you need the actual data for analysis.\n"
+        "- export: Export the full result set from the last ask as CSV. "
+        "Perfect for loading into pandas with pd.read_csv(io.StringIO(csv)).\n"
+        "- catalog: Discover available tables and columns for a datasource."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["ask", "data", "export", "catalog"],
+            },
+            "mind": {
+                "type": "string",
+                "description": "The mind (model) name to query. Required for 'ask'.",
+            },
+            "question": {
+                "type": "string",
+                "description": "Natural language question. Required for 'ask'.",
+            },
+            "datasource": {
+                "type": "string",
+                "description": "Datasource name. Required for 'catalog'.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max rows to return (default 100). For 'data' only.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Row offset for pagination (default 0). For 'data' only.",
+            },
+        },
+        "required": ["action"],
     },
 }
 
@@ -182,6 +235,8 @@ class ChatSession:
         skill_dirs: list[Path] | None = None,
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
+        minds_api_key: str = "",
+        minds_base_url: str = "https://mdb.ai",
     ) -> None:
         self._llm = llm_client
         self._run_task = run_task
@@ -196,6 +251,11 @@ class ChatSession:
             coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
+        )
+        self._minds: MindsClient | None = (
+            MindsClient(api_key=minds_api_key, base_url=minds_base_url)
+            if minds_api_key
+            else None
         )
 
     @property
@@ -250,6 +310,15 @@ class ChatSession:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:
             tools.append(REQUEST_SECRET_TOOL)
+        if self._minds is not None:
+            minds_tool = dict(MINDS_TOOL)
+            default_mind = os.environ.get("MINDS_DEFAULT_MIND", "")
+            if default_mind:
+                minds_tool["description"] = (
+                    MINDS_TOOL["description"]
+                    + f"\n\nDefault mind: {default_mind} (used when no mind is specified)."
+                )
+            tools.append(minds_tool)
         return tools
 
     def _handle_update_context(self, tc_input: dict) -> str:
@@ -364,6 +433,48 @@ class ChatSession:
         else:
             return f"Unknown scratchpad action: {action}"
 
+    async def _handle_minds(self, tc_input: dict) -> str:
+        """Dispatch a minds tool call by action."""
+        if self._minds is None:
+            return "Minds is not configured. Use /minds to set up."
+
+        action = tc_input.get("action", "")
+
+        try:
+            if action == "ask":
+                question = tc_input.get("question", "")
+                if not question:
+                    return "A 'question' is required for the ask action."
+                mind = tc_input.get("mind", "") or os.environ.get("MINDS_DEFAULT_MIND", "")
+                if not mind:
+                    return (
+                        "A 'mind' name is required. Specify it in the tool call "
+                        "or set a default via /minds."
+                    )
+                return await self._minds.ask(question, mind)
+
+            elif action == "data":
+                limit = tc_input.get("limit", 100)
+                offset = tc_input.get("offset", 0)
+                return await self._minds.data(limit=limit, offset=offset)
+
+            elif action == "export":
+                return await self._minds.export()
+
+            elif action == "catalog":
+                datasource = tc_input.get("datasource", "")
+                if not datasource:
+                    return "A 'datasource' name is required for the catalog action."
+                return await self._minds.catalog(datasource)
+
+            else:
+                return f"Unknown minds action: {action}"
+
+        except ValueError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"Minds error: {exc}"
+
     async def close(self) -> None:
         """Clean up scratchpads and other resources."""
         await self._scratchpads.close_all()
@@ -411,6 +522,8 @@ class ChatSession:
                     result_text = self._handle_request_secret(tc.input)
                 elif tc.name == "scratchpad":
                     result_text = await self._handle_scratchpad(tc.input)
+                elif tc.name == "minds":
+                    result_text = await self._handle_minds(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -499,6 +612,8 @@ class ChatSession:
                     result_text = await self._handle_scratchpad(tc.input)
                     if tc.input.get("action") == "dump":
                         yield StreamToolResult(content=result_text)
+                elif tc.name == "minds":
+                    result_text = await self._handle_minds(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -566,6 +681,8 @@ def _rebuild_session(
         skill_dirs=skill_dirs,
         coding_provider=settings.coding_provider,
         coding_api_key=api_key,
+        minds_api_key=os.environ.get("MINDS_API_KEY", ""),
+        minds_base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
     )
 
 
@@ -669,11 +786,90 @@ async def _handle_setup(
     )
 
 
+async def _handle_minds_setup(
+    console: Console,
+    settings: AntonSettings,
+    workspace: Workspace,
+    state: dict,
+    self_awareness,
+    skill_dirs: list[Path],
+    do_run_task,
+    do_run_task_stream,
+) -> ChatSession:
+    """Interactive wizard to configure Minds (MindsDB) integration."""
+    from rich.prompt import Prompt
+
+    console.print()
+    console.print("[anton.cyan]Minds (MindsDB) configuration:[/]")
+
+    # Show current config
+    current_key = os.environ.get("MINDS_API_KEY", "")
+    current_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
+    current_mind = os.environ.get("MINDS_DEFAULT_MIND", "")
+
+    if current_key:
+        masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
+        console.print(f"  API key:      [bold]{masked}[/]")
+    else:
+        console.print("  API key:      [dim]not set[/]")
+    console.print(f"  Base URL:     [bold]{current_url}[/]")
+    if current_mind:
+        console.print(f"  Default mind: [bold]{current_mind}[/]")
+    else:
+        console.print("  Default mind: [dim]not set[/]")
+    console.print()
+
+    # API key
+    api_key = Prompt.ask(
+        "Minds API key" + (f" [dim](Enter to keep {masked})[/]" if current_key else ""),
+        default="",
+        console=console,
+    ).strip()
+
+    # Base URL
+    base_url = Prompt.ask(
+        "Base URL",
+        default=current_url,
+        console=console,
+    ).strip()
+
+    # Default mind name
+    default_mind = Prompt.ask(
+        "Default mind name [dim](optional, Enter to skip)[/]",
+        default=current_mind,
+        console=console,
+    ).strip()
+
+    # Persist
+    if api_key:
+        workspace.set_secret("MINDS_API_KEY", api_key)
+    if base_url != "https://mdb.ai":
+        workspace.set_secret("MINDS_BASE_URL", base_url)
+    if default_mind:
+        workspace.set_secret("MINDS_DEFAULT_MIND", default_mind)
+
+    console.print()
+    console.print("[anton.success]Minds configuration updated.[/]")
+    console.print()
+
+    return _rebuild_session(
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        workspace=workspace,
+        console=console,
+        skill_dirs=skill_dirs,
+        do_run_task=do_run_task,
+        do_run_task_stream=do_run_task_stream,
+    )
+
+
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
     console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
+    console.print("  [bold]/minds[/]  — Configure Minds (MindsDB) for natural language data access")
     console.print("  [bold]/help[/]   — Show this help message")
     console.print("  [bold]exit[/]    — Quit the chat")
     console.print()
@@ -819,6 +1015,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         skill_dirs=skill_dirs,
         coding_provider=settings.coding_provider,
         coding_api_key=coding_api_key,
+        minds_api_key=os.environ.get("MINDS_API_KEY", ""),
+        minds_base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
     )
 
     console.print("[anton.muted]Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
@@ -851,6 +1049,12 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 cmd = stripped.split()[0].lower()
                 if cmd == "/setup":
                     session = await _handle_setup(
+                        console, settings, workspace, state,
+                        self_awareness, skill_dirs,
+                        _do_run_task, _do_run_task_stream,
+                    )
+                elif cmd == "/minds":
+                    session = await _handle_minds_setup(
                         console, settings, workspace, state,
                         self_awareness, skill_dirs,
                         _do_run_task, _do_run_task_stream,
