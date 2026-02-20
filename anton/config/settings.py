@@ -30,6 +30,7 @@ class AntonSettings(BaseSettings):
     coding_model: str = "claude-opus-4-6"
 
     anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
 
     skills_dir: str = "skills"
     user_skills_dir: str = ".anton/skills"

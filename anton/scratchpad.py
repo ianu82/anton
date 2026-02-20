@@ -32,9 +32,14 @@ _scratchpad_model = os.environ.get("ANTON_SCRATCHPAD_MODEL", "")
 if _scratchpad_model:
     try:
         import asyncio as _llm_asyncio
-        from anton.llm.anthropic import AnthropicProvider as _AnthropicProvider
 
-        _llm_provider = _AnthropicProvider()  # reads ANTHROPIC_API_KEY from env
+        _scratchpad_provider_name = os.environ.get("ANTON_SCRATCHPAD_PROVIDER", "anthropic")
+        if _scratchpad_provider_name == "openai":
+            from anton.llm.openai import OpenAIProvider as _ProviderClass
+        else:
+            from anton.llm.anthropic import AnthropicProvider as _ProviderClass
+
+        _llm_provider = _ProviderClass()  # reads API key from env
         _llm_model = _scratchpad_model
 
         class _ScratchpadLLM:
@@ -299,6 +304,7 @@ class Scratchpad:
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _boot_path: str | None = field(default=None, repr=False)
     _skill_dirs: list[Path] = field(default_factory=list, repr=False)
+    _coding_provider: str = field(default="anthropic", repr=False)
     _coding_model: str = field(default="", repr=False)
 
     async def start(self) -> None:
@@ -313,10 +319,14 @@ class Scratchpad:
             env["ANTON_SKILL_DIRS"] = os.pathsep.join(str(d) for d in self._skill_dirs)
         if self._coding_model:
             env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
-        # Ensure the Anthropic SDK can find the API key under its expected name.
-        # Anton stores it as ANTON_ANTHROPIC_API_KEY; the SDK expects ANTHROPIC_API_KEY.
+        if self._coding_provider:
+            env["ANTON_SCRATCHPAD_PROVIDER"] = self._coding_provider
+        # Ensure the SDKs can find API keys under their expected names.
+        # Anton stores them as ANTON_*_API_KEY; the SDKs expect *_API_KEY.
         if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
             env["ANTHROPIC_API_KEY"] = env["ANTON_ANTHROPIC_API_KEY"]
+        if "OPENAI_API_KEY" not in env and "ANTON_OPENAI_API_KEY" in env:
+            env["OPENAI_API_KEY"] = env["ANTON_OPENAI_API_KEY"]
         # Ensure the anton package is importable in the subprocess (needed for
         # get_llm and skill loading). The boot script runs from a temp file, so
         # the project root isn't on sys.path by default.
@@ -496,10 +506,12 @@ class ScratchpadManager:
     def __init__(
         self,
         skill_dirs: list[Path] | None = None,
+        coding_provider: str = "anthropic",
         coding_model: str = "",
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._skill_dirs: list[Path] = skill_dirs or []
+        self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
 
     async def get_or_create(self, name: str) -> Scratchpad:
@@ -508,6 +520,7 @@ class ScratchpadManager:
             pad = Scratchpad(
                 name=name,
                 _skill_dirs=self._skill_dirs,
+                _coding_provider=self._coding_provider,
                 _coding_model=self._coding_model,
             )
             await pad.start()

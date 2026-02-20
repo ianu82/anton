@@ -171,6 +171,7 @@ class ChatSession:
         workspace: Workspace | None = None,
         console: Console | None = None,
         skill_dirs: list[Path] | None = None,
+        coding_provider: str = "anthropic",
     ) -> None:
         self._llm = llm_client
         self._run_task = run_task
@@ -182,6 +183,7 @@ class ChatSession:
         self._history: list[dict] = []
         self._scratchpads = ScratchpadManager(
             skill_dirs=skill_dirs,
+            coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
         )
 
@@ -481,6 +483,150 @@ class ChatSession:
         self._history.append({"role": "assistant", "content": reply})
 
 
+def _rebuild_session(
+    *,
+    settings: AntonSettings,
+    state: dict,
+    self_awareness,
+    workspace,
+    console: Console,
+    skill_dirs: list[Path],
+    do_run_task,
+    do_run_task_stream,
+) -> ChatSession:
+    """Rebuild LLMClient + ChatSession after settings change."""
+    from anton.llm.client import LLMClient
+
+    state["llm_client"] = LLMClient.from_settings(settings)
+    runtime_context = (
+        f"- Provider: {settings.planning_provider}\n"
+        f"- Planning model: {settings.planning_model}\n"
+        f"- Coding model: {settings.coding_model}\n"
+        f"- Workspace: {settings.workspace_path}\n"
+    )
+    return ChatSession(
+        state["llm_client"],
+        do_run_task,
+        run_task_stream=do_run_task_stream,
+        self_awareness=self_awareness,
+        runtime_context=runtime_context,
+        workspace=workspace,
+        console=console,
+        skill_dirs=skill_dirs,
+        coding_provider=settings.coding_provider,
+    )
+
+
+async def _handle_setup(
+    console: Console,
+    settings: AntonSettings,
+    workspace: Workspace,
+    state: dict,
+    self_awareness,
+    skill_dirs: list[Path],
+    do_run_task,
+    do_run_task_stream,
+) -> ChatSession:
+    """Interactive setup wizard — reconfigure provider, model, and API key."""
+    from rich.prompt import Prompt
+
+    console.print()
+    console.print("[anton.cyan]Current configuration:[/]")
+    console.print(f"  Provider (planning): [bold]{settings.planning_provider}[/]")
+    console.print(f"  Provider (coding):   [bold]{settings.coding_provider}[/]")
+    console.print(f"  Planning model:      [bold]{settings.planning_model}[/]")
+    console.print(f"  Coding model:        [bold]{settings.coding_model}[/]")
+    console.print()
+
+    # --- Provider ---
+    providers = {"1": "anthropic", "2": "openai"}
+    current_num = "1" if settings.planning_provider == "anthropic" else "2"
+    console.print("[anton.cyan]Available providers:[/]")
+    console.print("  [bold]1[/]  Anthropic (Claude)")
+    console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
+    console.print()
+
+    choice = Prompt.ask(
+        "Select provider",
+        choices=["1", "2"],
+        default=current_num,
+        console=console,
+    )
+    provider = providers[choice]
+
+    # --- API key ---
+    key_attr = "anthropic_api_key" if provider == "anthropic" else "openai_api_key"
+    current_key = getattr(settings, key_attr) or ""
+    masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
+    console.print()
+    api_key = Prompt.ask(
+        f"API key for {provider.title()} [dim](Enter to keep {masked})[/]",
+        default="",
+        console=console,
+    )
+    api_key = api_key.strip()
+
+    # --- Models ---
+    defaults = {
+        "anthropic": ("claude-sonnet-4-6", "claude-opus-4-6"),
+        "openai": ("gpt-4.1", "gpt-4.1"),
+    }
+    default_planning, default_coding = defaults.get(provider, ("", ""))
+
+    console.print()
+    planning_model = Prompt.ask(
+        "Planning model",
+        default=settings.planning_model if provider == settings.planning_provider else default_planning,
+        console=console,
+    )
+    coding_model = Prompt.ask(
+        "Coding model",
+        default=settings.coding_model if provider == settings.coding_provider else default_coding,
+        console=console,
+    )
+
+    # --- Persist ---
+    settings.planning_provider = provider
+    settings.coding_provider = provider
+    settings.planning_model = planning_model
+    settings.coding_model = coding_model
+
+    workspace.set_secret("ANTON_PLANNING_PROVIDER", provider)
+    workspace.set_secret("ANTON_CODING_PROVIDER", provider)
+    workspace.set_secret("ANTON_PLANNING_MODEL", planning_model)
+    workspace.set_secret("ANTON_CODING_MODEL", coding_model)
+
+    if api_key:
+        setattr(settings, key_attr, api_key)
+        key_name = f"ANTON_{provider.upper()}_API_KEY"
+        workspace.set_secret(key_name, api_key)
+
+    console.print()
+    console.print("[anton.success]Configuration updated.[/]")
+    console.print()
+
+    return _rebuild_session(
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        workspace=workspace,
+        console=console,
+        skill_dirs=skill_dirs,
+        do_run_task=do_run_task,
+        do_run_task_stream=do_run_task_stream,
+    )
+
+
+def _print_slash_help(console: Console) -> None:
+    """Print available slash commands."""
+    console.print()
+    console.print("[anton.cyan]Available commands:[/]")
+    console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
+    console.print("  [bold]/help[/]   — Show this help message")
+    console.print("  [bold]exit[/]    — Quit the chat")
+    console.print()
+
+
 def run_chat(console: Console, settings: AntonSettings) -> None:
     """Launch the interactive chat REPL."""
     asyncio.run(_chat_loop(console, settings))
@@ -615,9 +761,10 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         workspace=workspace,
         console=console,
         skill_dirs=skill_dirs,
+        coding_provider=settings.coding_provider,
     )
 
-    console.print("[anton.muted]Chat with Anton. Type 'exit' to quit.[/]")
+    console.print("[anton.muted]Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
     console.print()
 
     from anton.chat_ui import StreamDisplay
@@ -627,7 +774,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import ANSI
 
-    prompt_session: PromptSession[str] = PromptSession(mouse_support=True)
+    prompt_session: PromptSession[str] = PromptSession(mouse_support=False)
 
     try:
         while True:
@@ -641,6 +788,21 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 continue
             if stripped.lower() in ("exit", "quit", "bye"):
                 break
+
+            # Slash command dispatch
+            if stripped.startswith("/"):
+                cmd = stripped.split()[0].lower()
+                if cmd == "/setup":
+                    session = await _handle_setup(
+                        console, settings, workspace, state,
+                        self_awareness, skill_dirs,
+                        _do_run_task, _do_run_task_stream,
+                    )
+                elif cmd == "/help":
+                    _print_slash_help(console)
+                else:
+                    console.print(f"[anton.warning]Unknown command: {cmd}[/]")
+                continue
 
             display.start()
             t0 = time.monotonic()
@@ -677,21 +839,15 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 settings.anthropic_api_key = None
                 from anton.cli import _ensure_api_key
                 _ensure_api_key(settings)
-                state["llm_client"] = LLMClient.from_settings(settings)
-                # Rebuild runtime context in case provider changed
-                runtime_context = (
-                    f"- Provider: {settings.planning_provider}\n"
-                    f"- Planning model: {settings.planning_model}\n"
-                    f"- Coding model: {settings.coding_model}"
-                )
-                session = ChatSession(
-                    state["llm_client"], _do_run_task,
-                    run_task_stream=_do_run_task_stream,
+                session = _rebuild_session(
+                    settings=settings,
+                    state=state,
                     self_awareness=self_awareness,
-                    runtime_context=runtime_context,
                     workspace=workspace,
                     console=console,
                     skill_dirs=skill_dirs,
+                    do_run_task=_do_run_task,
+                    do_run_task_stream=_do_run_task_stream,
                 )
             except KeyboardInterrupt:
                 display.abort()

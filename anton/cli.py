@@ -92,12 +92,14 @@ def main(
 
 
 def _has_api_key(settings) -> bool:
-    """Check if any API key is available."""
-    if settings.anthropic_api_key:
-        return True
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return True
-    return False
+    """Check if all configured providers have API keys."""
+    providers = {settings.planning_provider, settings.coding_provider}
+    for p in providers:
+        if p == "anthropic" and not (settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")):
+            return False
+        if p == "openai" and not (settings.openai_api_key or os.environ.get("OPENAI_API_KEY")):
+            return False
+    return True
 
 
 def _ensure_api_key(settings) -> None:
@@ -109,9 +111,10 @@ def _ensure_api_key(settings) -> None:
     console.print("[anton.warning]No API key configured.[/]")
     console.print()
 
-    providers = {"1": "anthropic"}
+    providers = {"1": "anthropic", "2": "openai"}
     console.print("[anton.cyan]Available providers:[/]")
     console.print("  [bold]1[/]  Anthropic (Claude)")
+    console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
     console.print()
 
     choice = Prompt.ask(
@@ -144,13 +147,32 @@ def _ensure_api_key(settings) -> None:
     # Store via secret vault — never passes through LLM
     ws.set_secret(key_name, api_key)
 
-    # Apply to current process
+    # Apply to current process and set provider config
     if provider == "anthropic":
         settings.anthropic_api_key = api_key
+    elif provider == "openai":
+        settings.openai_api_key = api_key
+        settings.planning_provider = "openai"
+        settings.coding_provider = "openai"
+        settings.planning_model = "gpt-4.1"
+        settings.coding_model = "gpt-4.1"
+        ws.set_secret("ANTON_PLANNING_PROVIDER", "openai")
+        ws.set_secret("ANTON_CODING_PROVIDER", "openai")
+        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-4.1")
+        ws.set_secret("ANTON_CODING_MODEL", "gpt-4.1")
 
     console.print()
     console.print(f"[anton.success]Saved to {ws.env_path}[/]")
     console.print()
+
+
+@app.command("setup")
+def setup(ctx: typer.Context) -> None:
+    """Configure provider, model, and API key."""
+    settings = _get_settings(ctx)
+    _ensure_workspace(settings)
+    _ensure_api_key(settings)
+    console.print("[anton.success]Setup complete.[/]")
 
 
 @app.command("dashboard")
