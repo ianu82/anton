@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anthropic
@@ -20,6 +21,7 @@ from anton.llm.provider import (
     StreamTextDelta,
     StreamToolUseStart,
 )
+from anton.scratchpad import ScratchpadManager
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -122,6 +124,34 @@ REQUEST_SECRET_TOOL = {
 }
 
 
+SCRATCHPAD_TOOL = {
+    "name": "scratchpad",
+    "description": (
+        "Manage persistent Python scratchpads for stateful, iterative "
+        "computation. Unlike run_code (one-shot), scratchpads maintain state across "
+        "cells — variables, imports, and data persist. Use for data exploration, "
+        "multi-step analysis, and building up results incrementally.\n\n"
+        "Actions:\n"
+        "- exec: Run code in the scratchpad (creates it if needed)\n"
+        "- view: See all cells and their outputs\n"
+        "- reset: Restart the process, clearing all state\n"
+        "- remove: Kill the scratchpad\n\n"
+        "run_skill(name, **kwargs) is available in code to call Anton skills."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove"]},
+            "name": {"type": "string", "description": "Scratchpad name"},
+            "code": {
+                "type": "string",
+                "description": "Python code (exec only). Use print() for output.",
+            },
+        },
+        "required": ["action", "name"],
+    },
+}
+
 _RUN_CODE_TIMEOUT = 30
 
 class _ProgressChannel(Channel):
@@ -153,6 +183,7 @@ class ChatSession:
         runtime_context: str = "",
         workspace: Workspace | None = None,
         console: Console | None = None,
+        skill_dirs: list[Path] | None = None,
     ) -> None:
         self._llm = llm_client
         self._run_task = run_task
@@ -162,6 +193,7 @@ class ChatSession:
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = []
+        self._scratchpads = ScratchpadManager(skill_dirs=skill_dirs)
 
     @property
     def history(self) -> list[dict]:
@@ -181,7 +213,7 @@ class ChatSession:
         return prompt
 
     def _build_tools(self) -> list[dict]:
-        tools = [EXECUTE_TASK_TOOL, RUN_CODE_TOOL]
+        tools = [EXECUTE_TASK_TOOL, RUN_CODE_TOOL, SCRATCHPAD_TOOL]
         if self._self_awareness is not None:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:
@@ -293,6 +325,58 @@ class ChatSession:
                 except OSError:
                     pass
 
+    async def _handle_scratchpad(self, tc_input: dict) -> str:
+        """Dispatch a scratchpad tool call by action."""
+        action = tc_input.get("action", "")
+        name = tc_input.get("name", "")
+
+        if not name:
+            return "Scratchpad name is required."
+
+        if action == "exec":
+            code = tc_input.get("code", "")
+            if not code or not code.strip():
+                return "No code provided."
+            pad = await self._scratchpads.get_or_create(name)
+            cell = await pad.execute(code)
+
+            parts: list[str] = []
+            if cell.stdout:
+                stdout = cell.stdout
+                if len(stdout) > 10_000:
+                    stdout = stdout[:10_000] + f"\n\n... (truncated, {len(stdout)} chars total)"
+                parts.append(stdout)
+            if cell.stderr:
+                parts.append(f"[stderr]\n{cell.stderr}")
+            if cell.error:
+                parts.append(f"[error]\n{cell.error}")
+            if not parts:
+                return "Code executed successfully (no output)."
+            return "\n".join(parts)
+
+        elif action == "view":
+            pad = self._scratchpads._pads.get(name)
+            if pad is None:
+                return f"No scratchpad named '{name}'."
+            return pad.view()
+
+        elif action == "reset":
+            pad = self._scratchpads._pads.get(name)
+            if pad is None:
+                return f"No scratchpad named '{name}'."
+            await pad.reset()
+            return f"Scratchpad '{name}' reset. All state cleared."
+
+        elif action == "remove":
+            return await self._scratchpads.remove(name)
+
+        else:
+            return f"Unknown scratchpad action: {action}"
+
+    async def close(self) -> None:
+        """Clean up scratchpads and other resources."""
+        await self._scratchpads.close_all()
+
     async def turn(self, user_input: str) -> str:
         self._history.append({"role": "user", "content": user_input})
 
@@ -336,6 +420,8 @@ class ChatSession:
                     result_text = self._handle_update_context(tc.input)
                 elif tc.name == "request_secret":
                     result_text = self._handle_request_secret(tc.input)
+                elif tc.name == "scratchpad":
+                    result_text = await self._handle_scratchpad(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -422,6 +508,8 @@ class ChatSession:
                     result_text = self._handle_update_context(tc.input)
                 elif tc.name == "request_secret":
                     result_text = self._handle_request_secret(tc.input)
+                elif tc.name == "scratchpad":
+                    result_text = await self._handle_scratchpad(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -459,8 +547,6 @@ def run_chat(console: Console, settings: AntonSettings) -> None:
 
 
 async def _chat_loop(console: Console, settings: AntonSettings) -> None:
-    from pathlib import Path
-
     from anton.channel.terminal import CLIChannel
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.core.agent import Agent
@@ -578,6 +664,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         f"- Memory: {'enabled' if settings.memory_enabled else 'disabled'}"
     )
 
+    skill_dirs = [builtin, user_dir]
+
     session = ChatSession(
         state["llm_client"],
         _do_run_task,
@@ -586,6 +674,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         runtime_context=runtime_context,
         workspace=workspace,
         console=console,
+        skill_dirs=skill_dirs,
     )
 
     console.print("[anton.muted]Chat with Anton. Type 'exit' to quit.[/]")
@@ -655,6 +744,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     runtime_context=runtime_context,
                     workspace=workspace,
                     console=console,
+                    skill_dirs=skill_dirs,
                 )
             except KeyboardInterrupt:
                 display.abort()
@@ -669,4 +759,5 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
 
     console.print()
     console.print("[anton.muted]See you.[/]")
+    await session.close()
     await channel.close()

@@ -158,11 +158,12 @@ them via cron, and killing them (which also removes their schedule). This is sca
 but not yet fully operational — be upfront about that.
 
 QUICK COMPUTATION:
-- When you need to count characters, do math, parse data, or transform text — use the \
-run_code tool instead of guessing or doing it in your head.
-- Prefer run_code over execute_task for quick, one-off computations that don't need to \
-become persistent skills.
-- Always use print() to produce output — run_code captures stdout.
+- For one-shot calculations, parsing, or data transforms — use run_code. It runs a \
+standalone Python script and returns the output.
+- For multi-step, stateful work (load data → explore → transform → iterate) — use the \
+scratchpad tool. Variables, imports, and data persist across cells, like a notebook.
+- run_skill(name, **kwargs) is available inside scratchpads to call Anton skills from code.
+- Always use print() to produce output — both run_code and scratchpad capture stdout.
 - The Python standard library is available. No package installs.
 
 CONVERSATION DISCIPLINE (critical):
