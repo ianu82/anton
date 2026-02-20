@@ -64,6 +64,12 @@ class StreamTaskProgress:
     eta_seconds: float | None = None
 
 
+@dataclass
+class StreamToolResult:
+    """Tool result that should be displayed to the user (e.g. scratchpad dump)."""
+    content: str
+
+
 StreamEvent = (
     StreamTextDelta
     | StreamToolUseStart
@@ -71,6 +77,7 @@ StreamEvent = (
     | StreamToolUseEnd
     | StreamComplete
     | StreamTaskProgress
+    | StreamToolResult
 )
 
 

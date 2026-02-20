@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from anton.chat import SCRATCHPAD_TOOL, ChatSession
-from anton.llm.provider import LLMResponse, StreamComplete, ToolCall, Usage
+from anton.llm.provider import LLMResponse, StreamComplete, StreamToolResult, ToolCall, Usage
 
 
 def _text_response(text: str) -> LLMResponse:
@@ -190,6 +190,49 @@ class _FakeAsyncIter:
         if not self._items:
             raise StopAsyncIteration
         return self._items.pop(0)
+
+
+class TestScratchpadDumpStreaming:
+    async def test_scratchpad_dump_streams_tool_result(self):
+        """dump action yields a StreamToolResult in the streaming path."""
+        mock_llm = AsyncMock()
+
+        call_count = 0
+
+        def fake_plan_stream(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _FakeAsyncIter([
+                    StreamComplete(
+                        response=_scratchpad_response("Running.", "exec", "main", "print(42)")
+                    )
+                ])
+            if call_count == 2:
+                return _FakeAsyncIter([
+                    StreamComplete(
+                        response=_scratchpad_response("Here.", "dump", "main")
+                    )
+                ])
+            return _FakeAsyncIter([
+                StreamComplete(response=_text_response("Done!"))
+            ])
+
+        mock_llm.plan_stream = fake_plan_stream
+        mock_run = AsyncMock()
+
+        session = ChatSession(mock_llm, mock_run)
+        try:
+            events = []
+            async for event in session.turn_stream("show work"):
+                events.append(event)
+
+            tool_results = [e for e in events if isinstance(e, StreamToolResult)]
+            assert len(tool_results) == 1
+            assert "```python" in tool_results[0].content
+            assert "## Scratchpad: main" in tool_results[0].content
+        finally:
+            await session.close()
 
 
 class TestScratchpadStreaming:

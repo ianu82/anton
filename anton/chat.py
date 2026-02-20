@@ -16,6 +16,7 @@ from anton.llm.provider import (
     StreamEvent,
     StreamTaskProgress,
     StreamTextDelta,
+    StreamToolResult,
     StreamToolUseStart,
 )
 from anton.scratchpad import ScratchpadManager
@@ -447,6 +448,8 @@ class ChatSession:
                     result_text = self._handle_request_secret(tc.input)
                 elif tc.name == "scratchpad":
                     result_text = await self._handle_scratchpad(tc.input)
+                    if tc.input.get("action") == "dump":
+                        yield StreamToolResult(content=result_text)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
 
@@ -646,6 +649,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         if ttft is None:
                             ttft = time.monotonic() - t0
                         display.append_text(event.text)
+                    elif isinstance(event, StreamToolResult):
+                        display.show_tool_result(event.content)
                     elif isinstance(event, StreamToolUseStart):
                         display.show_tool_execution(event.name)
                     elif isinstance(event, StreamTaskProgress):

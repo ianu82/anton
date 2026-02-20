@@ -83,6 +83,16 @@ class StreamDisplay:
         self._started = True
         self._live.update(Markdown(self._buffer))
 
+    def show_tool_result(self, content: str) -> None:
+        """Display a tool result (e.g. scratchpad dump) directly to the user."""
+        if self._live is None:
+            return
+        if self._buffer:
+            self._buffer += "\n\n"
+        self._buffer += content
+        self._started = True
+        self._live.update(Markdown(self._buffer))
+
     def show_tool_execution(self, task: str) -> None:
         if self._live is None:
             return
