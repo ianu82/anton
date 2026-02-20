@@ -14,10 +14,28 @@ Usage inside a skill::
         messages=[{"role": "user", "content": text}],
     )
     answer = response.content
+
+Structured output::
+
+    from pydantic import BaseModel
+    from anton.skill.context import get_llm
+
+    class Sentiment(BaseModel):
+        label: str
+        confidence: float
+
+    llm = get_llm()
+    result = await llm.generate_object(
+        Sentiment,
+        system="Classify the sentiment of the text.",
+        messages=[{"role": "user", "content": "I love this!"}],
+    )
+    # result is a Sentiment instance
 """
 
 from __future__ import annotations
 
+import json as _json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +63,7 @@ class SkillLLM:
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
         max_tokens: int = 4096,
     ) -> LLMResponse:
         """Call the LLM. Same interface as LLMProvider.complete but model is pre-set."""
@@ -53,8 +72,71 @@ class SkillLLM:
             system=system,
             messages=messages,
             tools=tools,
+            tool_choice=tool_choice,
             max_tokens=max_tokens,
         )
+
+    async def generate_object(
+        self,
+        schema_class,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 4096,
+    ) -> Any:
+        """Generate a structured object matching a Pydantic model.
+
+        Uses tool_choice to force the LLM to return structured data matching
+        the schema. Supports single models and ``list[Model]``.
+
+        Args:
+            schema_class: A Pydantic BaseModel subclass, or ``list[Model]``.
+            system: System prompt.
+            messages: Conversation messages.
+            max_tokens: Max tokens for the LLM call.
+
+        Returns:
+            An instance of schema_class (or a list of instances).
+        """
+        from pydantic import BaseModel
+
+        # Detect list[Model] vs single Model
+        is_list = hasattr(schema_class, "__origin__") and schema_class.__origin__ is list
+        if is_list:
+            inner_class = schema_class.__args__[0]
+
+            class _ArrayWrapper(BaseModel):
+                items: list[inner_class]  # type: ignore[valid-type]
+
+            schema = _ArrayWrapper.model_json_schema()
+            tool_name = f"{inner_class.__name__}_array"
+        else:
+            schema = schema_class.model_json_schema()
+            tool_name = schema_class.__name__
+
+        tool = {
+            "name": tool_name,
+            "description": f"Generate structured output matching the {tool_name} schema.",
+            "input_schema": schema,
+        }
+
+        response = await self.complete(
+            system=system,
+            messages=messages,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": tool_name},
+            max_tokens=max_tokens,
+        )
+
+        if not response.tool_calls:
+            raise ValueError("LLM did not return structured output.")
+
+        raw = response.tool_calls[0].input
+
+        if is_list:
+            wrapper = _ArrayWrapper.model_validate(raw)
+            return wrapper.items
+        return schema_class.model_validate(raw)
 
 
 _current_llm: ContextVar[SkillLLM | None] = ContextVar("_current_llm", default=None)

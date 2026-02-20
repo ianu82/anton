@@ -195,3 +195,90 @@ class TestScratchpadManager:
         assert len(mgr.list_pads()) == 2
         await mgr.close_all()
         assert len(mgr.list_pads()) == 0
+
+
+class TestScratchpadEnvironment:
+    async def test_env_vars_accessible(self, monkeypatch):
+        """Secrets from .anton/.env (in os.environ) are accessible in scratchpad."""
+        monkeypatch.setenv("MY_TEST_SECRET", "s3cret_value")
+        pad = Scratchpad(name="env-test")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "import os; print(os.environ.get('MY_TEST_SECRET', 'NOT_FOUND'))"
+            )
+            assert cell.stdout.strip() == "s3cret_value"
+        finally:
+            await pad.close()
+
+    async def test_get_llm_available_when_model_set(self):
+        """get_llm() should be injected when ANTON_SCRATCHPAD_MODEL is set."""
+        pad = Scratchpad(name="llm-test", _coding_model="claude-test-model")
+        await pad.start()
+        try:
+            cell = await pad.execute("llm = get_llm(); print(llm.model)")
+            assert cell.stdout.strip() == "claude-test-model"
+            assert cell.error is None
+        finally:
+            await pad.close()
+
+    async def test_get_llm_not_available_without_model(self):
+        """get_llm() should not be in namespace when no model is configured."""
+        pad = Scratchpad(name="no-llm")
+        await pad.start()
+        try:
+            cell = await pad.execute("get_llm()")
+            assert cell.error is not None
+            assert "NameError" in cell.error
+        finally:
+            await pad.close()
+
+    async def test_agentic_loop_available_when_model_set(self):
+        """agentic_loop() should be injected alongside get_llm()."""
+        pad = Scratchpad(name="agentic-test", _coding_model="claude-test-model")
+        await pad.start()
+        try:
+            cell = await pad.execute("print(callable(agentic_loop))")
+            assert cell.stdout.strip() == "True"
+            assert cell.error is None
+        finally:
+            await pad.close()
+
+    async def test_agentic_loop_not_available_without_model(self):
+        """agentic_loop() should not be in namespace when no model is configured."""
+        pad = Scratchpad(name="no-agentic")
+        await pad.start()
+        try:
+            cell = await pad.execute("agentic_loop()")
+            assert cell.error is not None
+            assert "NameError" in cell.error
+        finally:
+            await pad.close()
+
+    async def test_generate_object_available_when_model_set(self):
+        """generate_object() should be available on the LLM wrapper."""
+        pad = Scratchpad(name="genobj-test", _coding_model="claude-test-model")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "llm = get_llm(); print(hasattr(llm, 'generate_object') and callable(llm.generate_object))"
+            )
+            assert cell.stdout.strip() == "True"
+            assert cell.error is None
+        finally:
+            await pad.close()
+
+    async def test_api_key_bridged(self, monkeypatch):
+        """ANTON_ANTHROPIC_API_KEY should be bridged to ANTHROPIC_API_KEY."""
+        monkeypatch.setenv("ANTON_ANTHROPIC_API_KEY", "sk-ant-test-123")
+        # Remove ANTHROPIC_API_KEY if set, to test the bridge
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        pad = Scratchpad(name="key-test", _coding_model="test-model")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "import os; print(os.environ.get('ANTHROPIC_API_KEY', 'MISSING'))"
+            )
+            assert cell.stdout.strip() == "sk-ant-test-123"
+        finally:
+            await pad.close()

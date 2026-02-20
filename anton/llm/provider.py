@@ -83,6 +83,7 @@ class LLMProvider(ABC):
         system: str,
         messages: list[dict],
         tools: list[dict] | None = None,
+        tool_choice: dict | None = None,
         max_tokens: int = 4096,
     ) -> LLMResponse: ...
 

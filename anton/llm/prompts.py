@@ -30,6 +30,8 @@ LLM ACCESS (when the skill needs AI/LLM capabilities):
 - Use ``from anton.skill.context import get_llm`` — this gives you a pre-configured \
 LLM client with credentials and model already set. NEVER import anthropic or openai directly.
 - For a single LLM call: ``llm = get_llm()`` then ``response = await llm.complete(system=..., messages=[...])``
+- For structured output: ``result = await llm.generate_object(MyPydanticModel, system=..., messages=[...])`` \
+— the LLM fills the Pydantic model fields. Supports ``list[Model]`` for arrays of objects.
 - For a tool-call loop (agentic workflow): use ``from anton.skill.agentic import agentic_loop``
 - The agentic_loop function signature: \
 ``await agentic_loop(system=..., user_message=..., tools=[...], handle_tool=my_handler)`` \
@@ -165,6 +167,15 @@ persistent skills.
 - Variables, imports, and data persist across cells — like a notebook you drive \
 programmatically. Use this for both quick one-off calculations and multi-step analysis.
 - run_skill(name, **kwargs) is available inside scratchpads to call Anton skills from code.
+- get_llm() returns a pre-configured LLM client — use llm.complete(system=..., messages=[...]) \
+for AI-powered computation within scratchpad code. The call is synchronous.
+- llm.generate_object(MyModel, system=..., messages=[...]) extracts structured data into \
+Pydantic models. Define a class with BaseModel, and the LLM fills it. Supports list[Model] too.
+- agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) runs an LLM \
+tool-call loop inside scratchpad code. The LLM reasons and calls your tools iteratively. \
+handle_tool(name, inputs) is a plain sync function returning a string result. Use this for \
+multi-step AI workflows like classification, extraction, or analysis with structured outputs.
+- All .anton/.env secrets are available as environment variables (os.environ).
 - Always use print() to produce output — scratchpad captures stdout.
 - The Python standard library is available. No package installs.
 

@@ -33,6 +33,7 @@ class AnthropicProvider(LLMProvider):
         system: str,
         messages: list[dict],
         tools: list[dict] | None = None,
+        tool_choice: dict | None = None,
         max_tokens: int = 4096,
     ) -> LLMResponse:
         kwargs: dict = {
@@ -43,6 +44,8 @@ class AnthropicProvider(LLMProvider):
         }
         if tools:
             kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
 
         response = await self._client.messages.create(**kwargs)
 

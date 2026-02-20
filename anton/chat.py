@@ -114,7 +114,15 @@ SCRATCHPAD_TOOL = {
         "- reset: Restart the process, clearing all state\n"
         "- remove: Kill the scratchpad\n\n"
         "Use print() to produce output. The Python standard library is available.\n"
-        "run_skill(name, **kwargs) is available in code to call Anton skills."
+        "run_skill(name, **kwargs) is available in code to call Anton skills.\n"
+        "get_llm() returns a pre-configured LLM client (sync) — call "
+        "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
+        "llm.generate_object(MyModel, system=..., messages=[...]) extracts structured "
+        "data into Pydantic models. Supports single models and list[Model].\n"
+        "agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) "
+        "runs a tool-call loop where the LLM reasons and calls your tools iteratively. "
+        "handle_tool(name, inputs) -> str is a plain sync function.\n"
+        "All .anton/.env secrets are available as environment variables (os.environ)."
     ),
     "input_schema": {
         "type": "object",
@@ -170,7 +178,10 @@ class ChatSession:
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = []
-        self._scratchpads = ScratchpadManager(skill_dirs=skill_dirs)
+        self._scratchpads = ScratchpadManager(
+            skill_dirs=skill_dirs,
+            coding_model=getattr(llm_client, "coding_model", ""),
+        )
 
     @property
     def history(self) -> list[dict]:

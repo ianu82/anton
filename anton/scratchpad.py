@@ -27,7 +27,163 @@ _RESULT_END = "__ANTON_RESULT_END__"
 # Persistent namespace across cells
 namespace = {"__builtins__": __builtins__}
 
-# Inject run_skill() if skill dirs are available
+# --- Inject get_llm() for LLM access from scratchpad code ---
+_scratchpad_model = os.environ.get("ANTON_SCRATCHPAD_MODEL", "")
+if _scratchpad_model:
+    try:
+        import asyncio as _llm_asyncio
+        from anton.llm.anthropic import AnthropicProvider as _AnthropicProvider
+
+        _llm_provider = _AnthropicProvider()  # reads ANTHROPIC_API_KEY from env
+        _llm_model = _scratchpad_model
+
+        class _ScratchpadLLM:
+            """Sync LLM wrapper for scratchpad use. Mirrors SkillLLM interface."""
+
+            @property
+            def model(self):
+                return _llm_model
+
+            def complete(self, *, system, messages, tools=None, tool_choice=None, max_tokens=4096):
+                """Call the LLM synchronously. Returns an LLMResponse."""
+                return _llm_asyncio.run(_llm_provider.complete(
+                    model=_llm_model,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    max_tokens=max_tokens,
+                ))
+
+            def generate_object(self, schema_class, *, system, messages, max_tokens=4096):
+                """Generate a structured object matching a Pydantic model.
+
+                Uses tool_choice to force the LLM to return structured data.
+                Supports single models and list[Model].
+
+                Args:
+                    schema_class: A Pydantic BaseModel subclass, or list[Model].
+                    system: System prompt.
+                    messages: Conversation messages.
+                    max_tokens: Max tokens for the LLM call.
+
+                Returns:
+                    An instance of schema_class (or a list of instances).
+                """
+                from pydantic import BaseModel as _BaseModel
+
+                is_list = hasattr(schema_class, "__origin__") and schema_class.__origin__ is list
+                if is_list:
+                    inner_class = schema_class.__args__[0]
+
+                    class _ArrayWrapper(_BaseModel):
+                        items: list[inner_class]
+
+                    schema = _ArrayWrapper.model_json_schema()
+                    tool_name = f"{inner_class.__name__}_array"
+                else:
+                    schema = schema_class.model_json_schema()
+                    tool_name = schema_class.__name__
+
+                tool = {
+                    "name": tool_name,
+                    "description": f"Generate structured output matching the {tool_name} schema.",
+                    "input_schema": schema,
+                }
+
+                response = self.complete(
+                    system=system,
+                    messages=messages,
+                    tools=[tool],
+                    tool_choice={"type": "tool", "name": tool_name},
+                    max_tokens=max_tokens,
+                )
+
+                if not response.tool_calls:
+                    raise ValueError("LLM did not return structured output.")
+
+                import json as _json
+                raw = response.tool_calls[0].input
+
+                if is_list:
+                    wrapper = _ArrayWrapper.model_validate(raw)
+                    return wrapper.items
+                return schema_class.model_validate(raw)
+
+        _scratchpad_llm_instance = _ScratchpadLLM()
+
+        def get_llm():
+            """Get a pre-configured LLM client. No API keys needed."""
+            return _scratchpad_llm_instance
+
+        def agentic_loop(*, system, user_message, tools, handle_tool, max_turns=10, max_tokens=4096):
+            """Run a synchronous LLM tool-call loop.
+
+            The LLM reasons, calls tools via handle_tool(name, inputs) -> str,
+            and iterates until it produces a final text response.
+
+            Args:
+                system: System prompt for the LLM.
+                user_message: Initial user message.
+                tools: Tool definitions (Anthropic tool schema format).
+                handle_tool: Callback (tool_name, tool_input) -> result_string.
+                max_turns: Safety limit on LLM round-trips (default 10).
+                max_tokens: Max tokens per LLM call.
+
+            Returns:
+                The final text response from the LLM.
+            """
+            llm = get_llm()
+            messages = [{"role": "user", "content": user_message}]
+
+            response = None
+            for _ in range(max_turns):
+                response = llm.complete(
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                )
+
+                if not response.tool_calls:
+                    return response.content
+
+                # Build assistant message with text + tool_use blocks
+                assistant_content = []
+                if response.content:
+                    assistant_content.append({"type": "text", "text": response.content})
+                for tc in response.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    })
+                messages.append({"role": "assistant", "content": assistant_content})
+
+                # Execute each tool and collect results
+                tool_results = []
+                for tc in response.tool_calls:
+                    try:
+                        result = handle_tool(tc.name, tc.input)
+                    except Exception as exc:
+                        result = f"Error: {exc}"
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": result,
+                    })
+                messages.append({"role": "user", "content": tool_results})
+
+            # Hit max_turns
+            return response.content if response else ""
+
+        namespace["get_llm"] = get_llm
+        namespace["agentic_loop"] = agentic_loop
+    except Exception:
+        pass  # LLM not available — not fatal (e.g. anthropic not installed)
+
+# --- Inject run_skill() if skill dirs are available ---
 _skill_dirs_raw = os.environ.get("ANTON_SKILL_DIRS", "")
 if _skill_dirs_raw:
     try:
@@ -143,6 +299,7 @@ class Scratchpad:
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _boot_path: str | None = field(default=None, repr=False)
     _skill_dirs: list[Path] = field(default_factory=list, repr=False)
+    _coding_model: str = field(default="", repr=False)
 
     async def start(self) -> None:
         """Write the boot script to a temp file and launch the subprocess."""
@@ -154,6 +311,19 @@ class Scratchpad:
         env = os.environ.copy()
         if self._skill_dirs:
             env["ANTON_SKILL_DIRS"] = os.pathsep.join(str(d) for d in self._skill_dirs)
+        if self._coding_model:
+            env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
+        # Ensure the Anthropic SDK can find the API key under its expected name.
+        # Anton stores it as ANTON_ANTHROPIC_API_KEY; the SDK expects ANTHROPIC_API_KEY.
+        if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
+            env["ANTHROPIC_API_KEY"] = env["ANTON_ANTHROPIC_API_KEY"]
+        # Ensure the anton package is importable in the subprocess (needed for
+        # get_llm and skill loading). The boot script runs from a temp file, so
+        # the project root isn't on sys.path by default.
+        _anton_root = str(Path(__file__).resolve().parent.parent)
+        python_path = env.get("PYTHONPATH", "")
+        if _anton_root not in python_path:
+            env["PYTHONPATH"] = _anton_root + (os.pathsep + python_path if python_path else "")
 
         self._proc = await asyncio.create_subprocess_exec(
             sys.executable, path,
@@ -269,14 +439,23 @@ class Scratchpad:
 class ScratchpadManager:
     """Manages named scratchpad instances."""
 
-    def __init__(self, skill_dirs: list[Path] | None = None) -> None:
+    def __init__(
+        self,
+        skill_dirs: list[Path] | None = None,
+        coding_model: str = "",
+    ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._skill_dirs: list[Path] = skill_dirs or []
+        self._coding_model: str = coding_model
 
     async def get_or_create(self, name: str) -> Scratchpad:
         """Return existing pad or create + start a new one."""
         if name not in self._pads:
-            pad = Scratchpad(name=name, _skill_dirs=self._skill_dirs)
+            pad = Scratchpad(
+                name=name,
+                _skill_dirs=self._skill_dirs,
+                _coding_model=self._coding_model,
+            )
             await pad.start()
             self._pads[name] = pad
         return self._pads[name]
