@@ -112,10 +112,14 @@ SCRATCHPAD_TOOL = {
         "Actions:\n"
         "- exec: Run code in the scratchpad (creates it if needed)\n"
         "- view: See all cells and their outputs\n"
-        "- reset: Restart the process, clearing all state\n"
-        "- remove: Kill the scratchpad\n"
-        "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n\n"
-        "Use print() to produce output. The Python standard library is available.\n"
+        "- reset: Restart the process, clearing all state (installed packages survive)\n"
+        "- remove: Kill the scratchpad and delete its environment\n"
+        "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n"
+        "- install: Install Python packages into the scratchpad's environment. "
+        "Packages persist across resets. Use this when you need a library that isn't "
+        "already available.\n\n"
+        "Use print() to produce output. Host Python packages are available by default. "
+        "Use the install action to add more.\n"
         "run_skill(name, **kwargs) is available in code to call Anton skills.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
         "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
@@ -129,11 +133,16 @@ SCRATCHPAD_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove", "dump"]},
+            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove", "dump", "install"]},
             "name": {"type": "string", "description": "Scratchpad name"},
             "code": {
                 "type": "string",
                 "description": "Python code (exec only). Use print() for output.",
+            },
+            "packages": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Package names to install (install only).",
             },
         },
         "required": ["action", "name"],
@@ -342,6 +351,13 @@ class ChatSession:
             if pad is None:
                 return f"No scratchpad named '{name}'."
             return pad.render_notebook()
+
+        elif action == "install":
+            packages = tc_input.get("packages", [])
+            if not packages:
+                return "No packages specified."
+            pad = await self._scratchpads.get_or_create(name)
+            return await pad.install_packages(packages)
 
         else:
             return f"Unknown scratchpad action: {action}"

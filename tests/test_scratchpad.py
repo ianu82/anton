@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -379,5 +380,113 @@ class TestScratchpadEnvironment:
                 "import os; print(os.environ.get('ANTHROPIC_API_KEY', 'MISSING'))"
             )
             assert cell.stdout.strip() == "sk-ant-test-123"
+        finally:
+            await pad.close()
+
+
+class TestScratchpadVenv:
+    async def test_venv_created_on_start(self):
+        """Venv directory should be created when the scratchpad starts."""
+        pad = Scratchpad(name="venv-test")
+        await pad.start()
+        try:
+            assert pad._venv_dir is not None
+            assert os.path.isdir(pad._venv_dir)
+            assert pad._venv_python is not None
+            assert os.path.isfile(pad._venv_python)
+        finally:
+            await pad.close()
+
+    async def test_venv_cleaned_on_close(self):
+        """Venv directory should be removed when the scratchpad is closed."""
+        pad = Scratchpad(name="venv-close")
+        await pad.start()
+        venv_dir = pad._venv_dir
+        assert os.path.isdir(venv_dir)
+        await pad.close()
+        assert not os.path.exists(venv_dir)
+        assert pad._venv_dir is None
+        assert pad._venv_python is None
+
+    async def test_venv_persists_across_reset(self):
+        """Venv should survive a reset (only the process restarts)."""
+        pad = Scratchpad(name="venv-reset")
+        await pad.start()
+        venv_dir = pad._venv_dir
+        try:
+            await pad.reset()
+            assert pad._venv_dir == venv_dir
+            assert os.path.isdir(venv_dir)
+        finally:
+            await pad.close()
+
+    async def test_subprocess_uses_venv_python(self):
+        """The subprocess should run with the venv's Python executable."""
+        pad = Scratchpad(name="venv-exec")
+        await pad.start()
+        try:
+            cell = await pad.execute("import sys; print(sys.executable)")
+            assert cell.error is None
+            assert pad._venv_dir in cell.stdout.strip()
+        finally:
+            await pad.close()
+
+    async def test_system_packages_available(self):
+        """System site-packages should be accessible (e.g. pydantic from parent env)."""
+        pad = Scratchpad(name="venv-syspkg")
+        await pad.start()
+        try:
+            cell = await pad.execute("import pydantic; print(pydantic.__name__)")
+            assert cell.error is None
+            assert cell.stdout.strip() == "pydantic"
+        finally:
+            await pad.close()
+
+
+class TestScratchpadInstall:
+    async def test_install_packages_success(self):
+        """install_packages should install a package into the venv."""
+        pad = Scratchpad(name="install-test")
+        await pad.start()
+        try:
+            result = await pad.install_packages(["cowsay"])
+            assert "cowsay" in result.lower() or "already satisfied" in result.lower()
+            # Verify the package is importable
+            cell = await pad.execute("import cowsay; print('ok')")
+            assert cell.error is None
+            assert cell.stdout.strip() == "ok"
+        finally:
+            await pad.close()
+
+    async def test_install_empty_list(self):
+        """install_packages with empty list returns a message."""
+        pad = Scratchpad(name="install-empty")
+        await pad.start()
+        try:
+            result = await pad.install_packages([])
+            assert "no packages" in result.lower()
+        finally:
+            await pad.close()
+
+    async def test_install_invalid_package(self):
+        """install_packages with a bogus name should report failure."""
+        pad = Scratchpad(name="install-bad")
+        await pad.start()
+        try:
+            result = await pad.install_packages(["this-package-does-not-exist-xyz123"])
+            assert "failed" in result.lower() or "error" in result.lower()
+        finally:
+            await pad.close()
+
+    async def test_install_survives_reset(self):
+        """Packages installed before a reset should still be available after."""
+        pad = Scratchpad(name="install-reset")
+        await pad.start()
+        try:
+            await pad.install_packages(["cowsay"])
+            await pad.reset()
+            cell = await pad.execute("import cowsay; print('ok')")
+            assert cell.error is None
+            assert cell.stdout.strip() == "ok"
         finally:
             await pad.close()

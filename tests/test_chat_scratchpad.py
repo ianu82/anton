@@ -18,11 +18,14 @@ def _text_response(text: str) -> LLMResponse:
 
 
 def _scratchpad_response(
-    text: str, action: str, name: str, code: str = "", tool_id: str = "tc_sp_1"
+    text: str, action: str, name: str, code: str = "",
+    packages: list[str] | None = None, tool_id: str = "tc_sp_1",
 ) -> LLMResponse:
-    tc_input = {"action": action, "name": name}
+    tc_input: dict = {"action": action, "name": name}
     if code:
         tc_input["code"] = code
+    if packages is not None:
+        tc_input["packages"] = packages
     return LLMResponse(
         content=text,
         tool_calls=[
@@ -40,7 +43,17 @@ class TestScratchpadToolDefinition:
         assert "action" in props
         assert "name" in props
         assert "code" in props
+        assert "packages" in props
         assert SCRATCHPAD_TOOL["input_schema"]["required"] == ["action", "name"]
+
+    def test_tool_has_install_action(self):
+        actions = SCRATCHPAD_TOOL["input_schema"]["properties"]["action"]["enum"]
+        assert "install" in actions
+
+    def test_packages_property_is_array_of_strings(self):
+        packages_prop = SCRATCHPAD_TOOL["input_schema"]["properties"]["packages"]
+        assert packages_prop["type"] == "array"
+        assert packages_prop["items"] == {"type": "string"}
 
     async def test_scratchpad_tool_in_tools(self):
         """scratchpad should always be in _build_tools() output."""
@@ -270,5 +283,58 @@ class TestScratchpadStreaming:
             assert len(tool_result_msgs) == 1
             result_content = tool_result_msgs[0]["content"][0]["content"]
             assert "99" in result_content
+        finally:
+            await session.close()
+
+
+class TestScratchpadInstallViaChat:
+    async def test_install_action_dispatch(self):
+        """install action flows through chat and returns pip output."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(
+            side_effect=[
+                _scratchpad_response(
+                    "Installing.", "install", "main", packages=["cowsay"]
+                ),
+                _text_response("Installed cowsay."),
+            ]
+        )
+        mock_run = AsyncMock()
+
+        session = ChatSession(mock_llm, mock_run)
+        try:
+            reply = await session.turn("install cowsay")
+
+            tool_result_msgs = [
+                m for m in session.history
+                if m["role"] == "user" and isinstance(m["content"], list)
+            ]
+            assert len(tool_result_msgs) == 1
+            result_content = tool_result_msgs[0]["content"][0]["content"]
+            assert "cowsay" in result_content.lower() or "satisfied" in result_content.lower()
+        finally:
+            await session.close()
+
+    async def test_install_empty_packages_via_chat(self):
+        """install with no packages returns a message without crashing."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(
+            side_effect=[
+                _scratchpad_response("Installing.", "install", "main", packages=[]),
+                _text_response("Nothing to install."),
+            ]
+        )
+        mock_run = AsyncMock()
+
+        session = ChatSession(mock_llm, mock_run)
+        try:
+            await session.turn("install nothing")
+
+            tool_result_msgs = [
+                m for m in session.history
+                if m["role"] == "user" and isinstance(m["content"], list)
+            ]
+            result_content = tool_result_msgs[0]["content"][0]["content"]
+            assert "no packages" in result_content.lower()
         finally:
             await session.close()

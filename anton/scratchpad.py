@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import tempfile
+import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _CELL_TIMEOUT = 30
+_INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
 
 _BOOT_SCRIPT = r'''
@@ -306,9 +309,47 @@ class Scratchpad:
     _skill_dirs: list[Path] = field(default_factory=list, repr=False)
     _coding_provider: str = field(default="anthropic", repr=False)
     _coding_model: str = field(default="", repr=False)
+    _venv_dir: str | None = field(default=None, repr=False)
+    _venv_python: str | None = field(default=None, repr=False)
+
+    def _ensure_venv(self) -> None:
+        """Create a lightweight per-scratchpad venv (idempotent).
+
+        Uses system_site_packages=True so the real system packages are visible.
+        If we're running inside a parent venv, we also drop a .pth file so the
+        parent venv's site-packages are visible in the child.
+        """
+        if self._venv_dir is not None:
+            return
+        self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
+        venv.create(self._venv_dir, system_site_packages=True, with_pip=False)
+        # Resolve the venv python path
+        bin_dir = os.path.join(self._venv_dir, "bin")
+        if sys.platform == "win32":
+            bin_dir = os.path.join(self._venv_dir, "Scripts")
+        self._venv_python = os.path.join(bin_dir, "python")
+
+        # If running inside a parent venv, make its packages visible via .pth file
+        if sys.prefix != sys.base_prefix:
+            import site as _site
+            parent_site = _site.getsitepackages()
+            # Find the child venv's site-packages to place the .pth file
+            child_lib = os.path.join(self._venv_dir, "lib")
+            child_site = None
+            for dirpath, dirnames, _ in os.walk(child_lib):
+                if "site-packages" in dirnames:
+                    child_site = os.path.join(dirpath, "site-packages")
+                    break
+            if child_site and parent_site:
+                pth_path = os.path.join(child_site, "_parent_venv.pth")
+                with open(pth_path, "w") as f:
+                    for sp in parent_site:
+                        f.write(sp + "\n")
 
     async def start(self) -> None:
         """Write the boot script to a temp file and launch the subprocess."""
+        self._ensure_venv()
+
         fd, path = tempfile.mkstemp(suffix=".py", prefix="anton_scratchpad_")
         os.write(fd, _BOOT_SCRIPT.encode())
         os.close(fd)
@@ -336,7 +377,7 @@ class Scratchpad:
             env["PYTHONPATH"] = _anton_root + (os.pathsep + python_path if python_path else "")
 
         self._proc = await asyncio.create_subprocess_exec(
-            sys.executable, path,
+            self._venv_python, path,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -477,14 +518,8 @@ class Scratchpad:
 
         return "\n".join(parts)
 
-    async def reset(self) -> None:
-        """Kill the process, clear cells, restart."""
-        await self.close()
-        self.cells.clear()
-        await self.start()
-
-    async def close(self) -> None:
-        """Kill the process and clean up the boot script temp file."""
+    async def _stop_process(self) -> None:
+        """Kill the subprocess and delete the boot script, but keep the venv."""
         if self._proc is not None and self._proc.returncode is None:
             try:
                 self._proc.kill()
@@ -498,6 +533,44 @@ class Scratchpad:
             except OSError:
                 pass
             self._boot_path = None
+
+    async def reset(self) -> None:
+        """Kill the process, clear cells, restart. Venv (and installed packages) survive."""
+        await self._stop_process()
+        self.cells.clear()
+        await self.start()
+
+    async def close(self) -> None:
+        """Kill the process and clean up the boot script temp file and venv."""
+        await self._stop_process()
+        if self._venv_dir is not None:
+            try:
+                shutil.rmtree(self._venv_dir)
+            except OSError:
+                pass
+            self._venv_dir = None
+            self._venv_python = None
+
+    async def install_packages(self, packages: list[str]) -> str:
+        """Install packages into the scratchpad's venv via pip."""
+        if not packages:
+            return "No packages specified."
+        self._ensure_venv()
+        proc = await asyncio.create_subprocess_exec(
+            self._venv_python, "-m", "pip", "install", "--no-input", *packages,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_INSTALL_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"Install timed out after {_INSTALL_TIMEOUT}s."
+        output = stdout.decode()
+        if proc.returncode != 0:
+            return f"Install failed (exit {proc.returncode}):\n{output}"
+        return output
 
 
 class ScratchpadManager:
