@@ -452,19 +452,18 @@ class Scratchpad:
 
         for i, (num, cell) in enumerate(numbered):
             parts.append(f"\n### Cell {num}")
-            parts.append(f"```python\n{cell.code}\n```")
+            parts.append(f"```python\n{cell.code}\n```\n")
 
             if cell.error:
                 # Show only the last traceback line
                 last_line = cell.error.strip().split("\n")[-1]
-                parts.append(f"\n**Error:** `{last_line}`")
+                parts.append(f"**Error:** `{last_line}`")
             elif cell.stdout:
                 truncated = self._truncate_output(cell.stdout.rstrip("\n"))
-                parts.append(f"\n**Output:**\n```\n{truncated}\n```")
-            # Hide stderr unless accompanied by an error (already handled above)
+                parts.append(f"**Output:**\n```\n{truncated}\n```\n")
 
             if i < len(numbered) - 1:
-                parts.append("\n---")
+                parts.append("---")
 
         return "\n".join(parts)
 
