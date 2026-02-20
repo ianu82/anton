@@ -64,7 +64,7 @@ class TestDetectColorMode:
 
 class TestPalettes:
     def test_dark_palette_cyan(self):
-        assert DARK_PALETTE.cyan == "#00FFFF"
+        assert DARK_PALETTE.cyan == "#22d3ee"
 
     def test_light_palette_cyan(self):
         assert LIGHT_PALETTE.cyan == "#006B6B"
@@ -84,5 +84,6 @@ class TestBuildRichTheme:
     def test_theme_has_anton_keys(self):
         theme = build_rich_theme("dark")
         assert "anton.cyan" in theme.styles
+        assert "anton.glow" in theme.styles
         assert "phase.planning" in theme.styles
         assert "phase.executing" in theme.styles

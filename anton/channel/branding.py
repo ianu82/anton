@@ -12,11 +12,6 @@ from anton import __version__
 if TYPE_CHECKING:
     from rich.console import Console
 
-ASCII_LOGO = (
-    " \u2584\u2580\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588\u2580\u2588 \u2588\u2584 \u2588\n"
-    " \u2588\u2580\u2588 \u2588 \u2580\u2588  \u2588  \u2588\u2584\u2588 \u2588 \u2580\u2588"
-)
-
 TAGLINES = [
     "autonomous by design",
     "your code, my plan",
@@ -42,10 +37,27 @@ def pick_tagline(seed: int | None = None) -> str:
     return rng.choice(TAGLINES)
 
 
+def _render_robot(console: Console) -> None:
+    """Render the ASCII robot with cyan glow on the frame and name."""
+    g = "anton.glow"
+    m = "anton.muted"
+    console.print(f"[{g}]        \u2590[/]")
+    console.print(f"[{g}]   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584[/]   [{g}]\u2661\u2661\u2661\u2661[/]")
+    console.print(f"[{g}] \u2588\u2588[/]  [{m}](\u00b0\u1d17\u00b0)[/] [{g}]\u2588\u2588[/]")
+    console.print(
+        f"[{g}]   \u2580\u2588\u2584\u2588\u2588\u2584\u2588\u2580[/]"
+        f"          [{g}]\u2584\u2580\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588\u2580\u2588 \u2588\u2584 \u2588[/]"
+    )
+    console.print(
+        f"[{g}]    \u2590   \u2590[/]"
+        f"            [{g}]\u2588\u2580\u2588 \u2588 \u2580\u2588  \u2588  \u2588\u2584\u2588 \u2588 \u2580\u2588[/]"
+    )
+    console.print(f"[{g}]    \u2590   \u2590[/]")
+
+
 def render_banner(console: Console) -> None:
     tagline = pick_tagline()
-    logo = Text(ASCII_LOGO, style="anton.cyan")
-    console.print(logo)
+    _render_robot(console)
     console.print(
         f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
     )
@@ -60,8 +72,7 @@ def render_dashboard(console: Console) -> None:
     settings = AntonSettings()
     tagline = pick_tagline()
 
-    logo = Text(ASCII_LOGO, style="anton.cyan")
-    console.print(logo)
+    _render_robot(console)
     console.print(
         f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
     )

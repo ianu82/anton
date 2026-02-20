@@ -1,5 +1,14 @@
 # Anton
 
+```
+        ▐
+   ▄█▀██▀█▄   ♡♡♡♡
+ ██  (°ᴗ°) ██
+   ▀█▄██▄█▀          ▄▀█ █▄ █ ▀█▀ █▀█ █▄ █
+    ▐   ▐            █▀█ █ ▀█  █  █▄█ █ ▀█
+    ▐   ▐
+```
+
 A self-evolving autonomous system that collaborates with people to solve problems.
 
 Anton is not a code assistant. It's a coworker with a computer. You tell it what you need done — the same way you'd ask a colleague — and it figures out the rest. If it needs code, it writes it. If it needs a tool it doesn't have, it builds one. If it needs to run five things in parallel, it spawns minions.

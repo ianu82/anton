@@ -18,8 +18,8 @@ class Palette:
 
 
 DARK_PALETTE = Palette(
-    cyan="#00FFFF",
-    cyan_dim="#008B8B",
+    cyan="#22d3ee",
+    cyan_dim="#0891b2",
     success="#2FBF71",
     error="#FF6B6B",
     warning="#FFB020",
@@ -76,6 +76,7 @@ def build_rich_theme(mode: str) -> Theme:
         {
             "anton.cyan": p.cyan,
             "anton.cyan_dim": p.cyan_dim,
+            "anton.glow": f"bold {p.cyan}",
             "anton.heading": f"bold {p.cyan}",
             "anton.success": p.success,
             "anton.error": p.error,

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from anton.channel.branding import ASCII_LOGO, TAGLINES, pick_tagline
+from anton.channel.branding import TAGLINES, pick_tagline
 from anton.channel.theme import build_rich_theme
 
 
@@ -45,6 +45,23 @@ class TestRenderBanner:
         render_banner(console)
         output = _strip_ansi(console.file.getvalue())
         assert "v0.1.0" in output
+
+    def test_banner_contains_robot(self):
+        from anton.channel.branding import render_banner
+
+        console = _make_console()
+        render_banner(console)
+        output = _strip_ansi(console.file.getvalue())
+        assert "(\u00b0\u1d17\u00b0)" in output  # robot face
+
+    def test_banner_contains_block_name(self):
+        from anton.channel.branding import render_banner
+
+        console = _make_console()
+        render_banner(console)
+        output = _strip_ansi(console.file.getvalue())
+        # The block-letter ANTON name (top row)
+        assert "\u2584\u2580\u2588" in output
 
 
 class TestRenderDashboard:
