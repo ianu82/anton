@@ -1222,15 +1222,21 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
 
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import ANSI, HTML
+    from prompt_toolkit.styles import Style as PTStyle
 
     toolbar_text = ""
 
     def _bottom_toolbar():
         return HTML(f"\n<style fg='#555570'>{toolbar_text}</style>") if toolbar_text else ""
 
+    pt_style = PTStyle.from_dict({
+        "bottom-toolbar": "noreverse nounderline bg:default",
+    })
+
     prompt_session: PromptSession[str] = PromptSession(
         mouse_support=False,
         bottom_toolbar=_bottom_toolbar,
+        style=pt_style,
     )
 
     try:
