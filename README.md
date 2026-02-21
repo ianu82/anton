@@ -9,9 +9,8 @@
     ▐   ▐
 ```
 
-A self-evolving autonomous system that collaborates with people to solve problems.
 
-Anton is not a code assistant. It's a coworker with a computer. You tell it what you need done — the same way you'd ask a colleague — and it figures out the rest. If it needs code, it writes it. If it needs a tool it doesn't have, it builds one. If it needs to run five things in parallel, it spawns minions.
+Anton is an advanced AI coworker with a computer. You tell it what you need done and it figures out the rest. If it needs code, it writes it. If it needs a tool it doesn't have, it builds one. If it needs to run five things in parallel, it spawns minions.
 
 ## Quick start
 
@@ -31,15 +30,16 @@ you> Information about inflation in the US is found on this website,
      items stacked per month.
 ```
 
-What happens next is the interesting part. Anton doesn't have a "fetch BLS data" skill or a "plot CPI" template. It figures it out live: fetches the page with `httpx`, parses the HTML table with BeautifulSoup, installs any missing packages into the scratchpad on the fly, builds a pandas DataFrame, and generates a stacked bar chart with matplotlib — all in one conversation, with no setup. If it hits a missing library, it `install`s it mid-flow and keeps going. You get a chart on your screen and can ask follow-up questions about the data because the state is still in memory.
-
-That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result — the same way a coworker would if you walked over to their desk and asked.
+What happens next is the interesting part. Anton doesn't have any particular skill to begin with. It figures it out live: fetches the page, parses the HTML, writes scratchpad code on the fly, and generates a stacked bar chart with the information you asked for — all in one conversation, with no setup.
+That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result.
 
 ## How it works
 
+Anton is a self-evolving autonomous system that collaborates with people to solve problems.
+
 Anton operates in two modes depending on what you need:
 
-**Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer. This is how the BLS example above works — no pipeline, just Anton reasoning and computing live.
+**Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer. 
 
 **Autonomous pipeline** — For larger tasks that need structured execution, Anton switches to a four-phase pipeline:
 
@@ -47,39 +47,7 @@ Anton operates in two modes depending on what you need:
 Task → Memory Recall → Planning → Skill Building (if needed) → Execution
 ```
 
-1. **Memory recall** — Loads past session summaries, relevant learnings, and project context from `.anton/`. Every task starts with what Anton already knows.
-
-2. **Planning** — Breaks the task into atomic steps, mapping each to a known skill. If a step needs something that doesn't exist, it's flagged for building.
-
-3. **Skill building** — Generates Python skill modules on the fly, validates them, and registers them. These persist in `.anton/skills/` so they're available next time.
-
-4. **Execution** — Steps run in dependency order. Results, durations, and errors are logged. After completion, Anton extracts reusable learnings and records them.
-
 **Explainable by default** — You can always ask Anton to explain what it did. Ask it to dump its scratchpad and you get a full notebook-style breakdown: every cell of code it ran, the outputs, and errors — so you can follow its reasoning step by step.
-
-## Workspace
-
-When you run `anton` in a directory, it checks for an `anton.md` file. If the folder has existing files but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
-
-Once initialized, the workspace looks like:
-
-```
-project/
-├── anton.md              # Project context (read every conversation)
-└── .anton/
-    ├── .env              # Secrets (API keys, tokens — never pass through LLM)
-    ├── context/          # Self-awareness files (project facts, conventions)
-    ├── skills/           # User and auto-generated skills
-    ├── sessions/         # Task transcripts and summaries
-    ├── learnings/        # Extracted insights
-    └── minions/          # One folder per minion (<id>/status.json, artifacts)
-```
-
-**anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
-
-**Secret vault** — When Anton needs an API key or token, it asks you directly and stores the value in `.anton/.env`. The secret never passes through the LLM — Anton just gets told "the variable is set."
-
-All data lives in `.anton/` in the current working directory. Override with `anton --folder /path`.
 
 ## Scratchpad
 
@@ -145,6 +113,31 @@ Anton decides which minions to kill. When a minion is killed, its schedule is al
 | `anton minion "task"` | Spawn a background worker |
 | `anton minion "task" --every 5m` | Spawn a recurring minion |
 | `anton minions` | List tracked minions |
+
+## Workspace
+
+When you run `anton` in a directory, it checks for an `anton.md` file. If the folder has existing files but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
+
+Once initialized, the workspace looks like:
+
+```
+project/
+├── anton.md              # Project context (read every conversation)
+└── .anton/
+    ├── .env              # Secrets (API keys, tokens — never pass through LLM)
+    ├── context/          # Self-awareness files (project facts, conventions)
+    ├── skills/           # User and auto-generated skills
+    ├── sessions/         # Task transcripts and summaries
+    ├── learnings/        # Extracted insights
+    └── minions/          # One folder per minion (<id>/status.json, artifacts)
+```
+
+**anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
+
+**Secret vault** — When Anton needs an API key or token, it asks you directly and stores the value in `.anton/.env`. The secret never passes through the LLM — Anton just gets told "the variable is set."
+
+All data lives in `.anton/` in the current working directory. Override with `anton --folder /path`.
+
 
 ## Configuration
 
