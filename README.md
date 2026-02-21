@@ -10,7 +10,7 @@
 ```
 
 
-Anton is an advanced AI coworker with a computer. You tell it what you need done and it figures out the rest. If it needs code, it writes it. If it needs a tool it doesn't have, it builds one. If it needs to run five things in parallel, it spawns minions.
+Anton is an advanced AI coworker. You tell it what you need done and it figures out the rest. If it needs code, it writes it. If it needs a tool it doesn't have, it builds one. If it needs to run five things in parallel, it spawns minions.
 
 ## Quick start
 
