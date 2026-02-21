@@ -131,6 +131,101 @@ class TestBuildFailure:
         assert registry.get("count_lines") is None
 
 
+class TestAttemptFilePattern:
+    async def test_attempt_file_cleaned_on_success(self, tmp_path: Path, spec: SkillSpec, bus: EventBus):
+        mock_llm = AsyncMock()
+        mock_llm.code = AsyncMock(return_value=_make_response(VALID_SKILL_CODE))
+        registry = SkillRegistry()
+
+        builder = SkillBuilder(
+            llm_client=mock_llm, registry=registry, user_skills_dir=tmp_path, bus=bus,
+        )
+        await builder.build(spec)
+
+        attempt_path = tmp_path / spec.name / f".{spec.name}.attempt.py"
+        assert not attempt_path.exists()
+        # skill.py should exist (promoted from attempt)
+        assert (tmp_path / spec.name / "skill.py").exists()
+
+    async def test_attempt_file_cleaned_on_failure(self, tmp_path: Path, spec: SkillSpec, bus: EventBus):
+        mock_llm = AsyncMock()
+        bad_response = _make_response("```python\ndef broken(\n```")
+        mock_llm.code = AsyncMock(return_value=bad_response)
+        registry = SkillRegistry()
+
+        builder = SkillBuilder(
+            llm_client=mock_llm, registry=registry, user_skills_dir=tmp_path, bus=bus,
+        )
+        await builder.build(spec)
+
+        attempt_path = tmp_path / spec.name / f".{spec.name}.attempt.py"
+        assert not attempt_path.exists()
+
+    async def test_skill_py_not_overwritten_on_failure(self, tmp_path: Path, spec: SkillSpec, bus: EventBus):
+        """A broken build should never overwrite an existing skill.py."""
+        skill_dir = tmp_path / spec.name
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "skill.py"
+        skill_path.write_text("# original working code\n", encoding="utf-8")
+
+        mock_llm = AsyncMock()
+        bad_response = _make_response("```python\ndef broken(\n```")
+        mock_llm.code = AsyncMock(return_value=bad_response)
+        registry = SkillRegistry()
+
+        builder = SkillBuilder(
+            llm_client=mock_llm, registry=registry, user_skills_dir=tmp_path, bus=bus,
+        )
+        await builder.build(spec)
+
+        assert skill_path.read_text(encoding="utf-8") == "# original working code\n"
+
+
+class TestErrorContextInjection:
+    async def test_error_file_fed_into_build_prompt(self, tmp_path: Path, spec: SkillSpec, bus: EventBus):
+        """When skill.error exists, its content is injected into the LLM messages."""
+        skill_dir = tmp_path / spec.name
+        skill_dir.mkdir(parents=True)
+        error_path = skill_dir / "skill.error"
+        error_path.write_text("RuntimeError: boom\n", encoding="utf-8")
+        skill_path = skill_dir / "skill.py"
+        skill_path.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+
+        mock_llm = AsyncMock()
+        mock_llm.code = AsyncMock(return_value=_make_response(VALID_SKILL_CODE))
+        registry = SkillRegistry()
+
+        builder = SkillBuilder(
+            llm_client=mock_llm, registry=registry, user_skills_dir=tmp_path, bus=bus,
+        )
+        await builder.build(spec)
+
+        # Check that the LLM received the error context
+        call_kwargs = mock_llm.code.call_args
+        messages = call_kwargs.kwargs["messages"]
+        error_messages = [m for m in messages if "failed to load" in m.get("content", "").lower()]
+        assert len(error_messages) == 1
+        assert "RuntimeError: boom" in error_messages[0]["content"]
+        assert "raise RuntimeError('boom')" in error_messages[0]["content"]
+
+    async def test_error_file_deleted_on_success(self, tmp_path: Path, spec: SkillSpec, bus: EventBus):
+        skill_dir = tmp_path / spec.name
+        skill_dir.mkdir(parents=True)
+        error_path = skill_dir / "skill.error"
+        error_path.write_text("old error\n", encoding="utf-8")
+
+        mock_llm = AsyncMock()
+        mock_llm.code = AsyncMock(return_value=_make_response(VALID_SKILL_CODE))
+        registry = SkillRegistry()
+
+        builder = SkillBuilder(
+            llm_client=mock_llm, registry=registry, user_skills_dir=tmp_path, bus=bus,
+        )
+        await builder.build(spec)
+
+        assert not error_path.exists()
+
+
 class TestExtractCode:
     def test_python_fences(self):
         text = "Here is code:\n```python\nprint('hello')\n```\nDone."

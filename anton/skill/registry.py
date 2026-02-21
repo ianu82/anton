@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from anton.skill.base import SkillInfo
@@ -16,8 +17,14 @@ class SkillRegistry:
             return
 
         for skill_file in sorted(skills_path.glob("*/skill.py")):
-            for info in load_skill_module(skill_file):
-                self.register(info)
+            try:
+                for info in load_skill_module(skill_file):
+                    self.register(info)
+            except Exception as exc:
+                warnings.warn(
+                    f"Failed to load skill from {skill_file}: {exc}",
+                    stacklevel=2,
+                )
 
     def register(self, skill: SkillInfo) -> None:
         self._skills[skill.name] = skill

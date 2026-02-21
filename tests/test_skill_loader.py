@@ -28,10 +28,9 @@ class TestLoadSkillModule:
 
     def test_load_nonexistent_path(self):
         path = Path("/does/not/exist/skill.py")
-        # spec_from_file_location returns a spec even for missing files,
-        # but exec_module raises FileNotFoundError
-        with pytest.raises(FileNotFoundError):
-            load_skill_module(path)
+        # Broken/missing skills are skipped gracefully
+        result = load_skill_module(path)
+        assert result == []
 
     def test_loaded_skill_has_parameters(self):
         path = SKILLS_DIR / "run_command" / "skill.py"
@@ -45,3 +44,45 @@ class TestLoadSkillModule:
         skills = load_skill_module(path)
         info = skills[0]
         assert callable(info.execute)
+
+
+class TestSkillErrorFile:
+    def test_error_file_written_on_broken_skill(self, tmp_path: Path):
+        skill_dir = tmp_path / "bad_skill"
+        skill_dir.mkdir()
+        skill_path = skill_dir / "skill.py"
+        skill_path.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+
+        result = load_skill_module(skill_path)
+
+        assert result == []
+        error_path = skill_dir / "skill.error"
+        assert error_path.exists()
+        contents = error_path.read_text(encoding="utf-8")
+        assert "RuntimeError" in contents
+        assert "boom" in contents
+
+    def test_error_file_cleaned_on_success(self, tmp_path: Path):
+        skill_dir = tmp_path / "good_skill"
+        skill_dir.mkdir()
+        skill_path = skill_dir / "skill.py"
+        # Write a valid module (no skills, but loads fine)
+        skill_path.write_text("x = 1\n", encoding="utf-8")
+        # Pre-create a stale error file
+        error_path = skill_dir / "skill.error"
+        error_path.write_text("old error\n", encoding="utf-8")
+
+        load_skill_module(skill_path)
+
+        assert not error_path.exists()
+
+    def test_error_file_not_created_on_success(self, tmp_path: Path):
+        skill_dir = tmp_path / "clean_skill"
+        skill_dir.mkdir()
+        skill_path = skill_dir / "skill.py"
+        skill_path.write_text("x = 1\n", encoding="utf-8")
+
+        load_skill_module(skill_path)
+
+        error_path = skill_dir / "skill.error"
+        assert not error_path.exists()

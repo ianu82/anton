@@ -41,6 +41,8 @@ class SkillBuilder:
         skill_dir = self._user_skills_dir / spec.name
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_path = skill_dir / "skill.py"
+        attempt_path = skill_dir / f".{spec.name}.attempt.py"
+        error_path = skill_dir / "skill.error"
 
         system = BUILDER_PROMPT.format(
             name=spec.name,
@@ -55,54 +57,77 @@ class SkillBuilder:
             }
         ]
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            await self._bus.publish(
-                StatusUpdate(
-                    phase=Phase.SKILL_BUILDING,
-                    message=f"Building skill '{spec.name}' (attempt {attempt}/{MAX_ATTEMPTS})...",
-                )
-            )
-
-            response = await self._llm.code(
-                system=system,
-                messages=messages,
-                max_tokens=4096,
-            )
-
-            code = _extract_code(response.content)
-            skill_path.write_text(code, encoding="utf-8")
-
-            result = await self._tester.test_skill(skill_path, spec)
-
-            if result.passed:
-                await self._bus.publish(
-                    StatusUpdate(
-                        phase=Phase.SKILL_BUILDING,
-                        message=f"Skill '{spec.name}' built successfully",
-                    )
-                )
-                # Load and register
-                skills = load_skill_module(skill_path)
-                for skill in skills:
-                    if skill.name == spec.name:
-                        self._registry.register(skill)
-                        return skill
-                # Fallback: register first skill found
-                if skills:
-                    self._registry.register(skills[0])
-                    return skills[0]
-
-            # Failed — append error context for retry
-            messages.append({"role": "assistant", "content": response.content})
+        # If a previous build left a skill.error, feed it to the LLM
+        if error_path.exists():
+            error_text = error_path.read_text(encoding="utf-8")
+            broken_code = ""
+            if skill_path.exists():
+                broken_code = skill_path.read_text(encoding="utf-8")
             messages.append(
                 {
                     "role": "user",
                     "content": (
-                        f"The generated skill failed validation at stage '{result.stage}': "
-                        f"{result.error}\n\nPlease fix the code and try again."
+                        "A previous version of this skill failed to load. "
+                        "Here is the broken code and the error — fix it.\n\n"
+                        f"--- broken code ---\n{broken_code}\n\n"
+                        f"--- error ---\n{error_text}"
                     ),
                 }
             )
+
+        try:
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                await self._bus.publish(
+                    StatusUpdate(
+                        phase=Phase.SKILL_BUILDING,
+                        message=f"Building skill '{spec.name}' (attempt {attempt}/{MAX_ATTEMPTS})...",
+                    )
+                )
+
+                response = await self._llm.code(
+                    system=system,
+                    messages=messages,
+                    max_tokens=4096,
+                )
+
+                code = _extract_code(response.content)
+                attempt_path.write_text(code, encoding="utf-8")
+
+                result = await self._tester.test_skill(attempt_path, spec)
+
+                if result.passed:
+                    attempt_path.replace(skill_path)
+                    error_path.unlink(missing_ok=True)
+                    await self._bus.publish(
+                        StatusUpdate(
+                            phase=Phase.SKILL_BUILDING,
+                            message=f"Skill '{spec.name}' built successfully",
+                        )
+                    )
+                    # Load and register
+                    skills = load_skill_module(skill_path)
+                    for skill in skills:
+                        if skill.name == spec.name:
+                            self._registry.register(skill)
+                            return skill
+                    # Fallback: register first skill found
+                    if skills:
+                        self._registry.register(skills[0])
+                        return skills[0]
+
+                # Failed — append error context for retry
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"The generated skill failed validation at stage '{result.stage}': "
+                            f"{result.error}\n\nPlease fix the code and try again."
+                        ),
+                    }
+                )
+        finally:
+            attempt_path.unlink(missing_ok=True)
 
         await self._bus.publish(
             StatusUpdate(
