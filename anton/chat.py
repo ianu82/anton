@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anthropic
+import openai
 
 from anton.channel.base import Channel
 from anton.events.types import AntonEvent, StatusUpdate, TaskComplete, TaskFailed
@@ -1068,6 +1069,39 @@ def _print_slash_help(console: Console) -> None:
     console.print()
 
 
+def _friendly_error(exc: Exception) -> str:
+    """Map API exceptions to user-readable messages."""
+    # Anthropic errors
+    if isinstance(exc, anthropic.RateLimitError):
+        return "Rate limited — too many requests. Try again in a moment."
+    if isinstance(exc, (anthropic.InternalServerError, anthropic.APIStatusError)) and "overloaded" in str(exc).lower():
+        return "The AI service is busy right now. Give it a sec."
+    if isinstance(exc, anthropic.InternalServerError):
+        return "The AI service is busy right now. Give it a sec."
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "Request timed out. Try again."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Can't reach the AI service. Check your connection."
+    if isinstance(exc, anthropic.BadRequestError):
+        return "Something went wrong with the request."
+    # OpenAI errors
+    if isinstance(exc, openai.RateLimitError):
+        return "Rate limited — too many requests. Try again in a moment."
+    if isinstance(exc, openai.InternalServerError):
+        return "The AI service is busy right now. Give it a sec."
+    if isinstance(exc, openai.APITimeoutError):
+        return "Request timed out. Try again."
+    if isinstance(exc, openai.APIConnectionError):
+        return "Can't reach the AI service. Check your connection."
+    if isinstance(exc, openai.BadRequestError):
+        return "Something went wrong with the request."
+    # Fallback
+    brief = str(exc)
+    if len(brief) > 120:
+        brief = brief[:120] + "..."
+    return f"Something unexpected happened: {brief}"
+
+
 def run_chat(console: Console, settings: AntonSettings) -> None:
     """Launch the interactive chat REPL."""
     asyncio.run(_chat_loop(console, settings))
@@ -1300,7 +1334,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
 
                 elapsed = time.monotonic() - t0
                 display.finish(total_input, total_output, elapsed, ttft)
-            except anthropic.AuthenticationError:
+            except (anthropic.AuthenticationError, openai.AuthenticationError):
                 display.abort()
                 console.print()
                 console.print(
@@ -1322,10 +1356,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
             except KeyboardInterrupt:
                 display.abort()
                 console.print()
-                break
+                console.print("[anton.muted]Cancelled.[/]")
+                # Pop the dangling user message (no assistant reply followed)
+                if session.history and session.history[-1].get("role") == "user":
+                    session.history.pop()
+                console.print()
             except Exception as exc:
                 display.abort()
-                console.print(f"[anton.error]Error: {exc}[/]")
+                console.print(f"[anton.error]{_friendly_error(exc)}[/]")
                 console.print()
     except KeyboardInterrupt:
         pass
