@@ -38,7 +38,6 @@ class StreamTextDelta:
 class StreamToolUseStart:
     id: str
     name: str
-    description: str = ""
 
 
 @dataclass
