@@ -1218,13 +1218,12 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
 
     from anton.chat_ui import StreamDisplay
 
+    toolbar = {"stats": "", "status": ""}
     display = StreamDisplay(console, toolbar=toolbar)
 
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import ANSI, HTML
     from prompt_toolkit.styles import Style as PTStyle
-
-    toolbar = {"stats": "", "status": ""}
 
     def _bottom_toolbar():
         stats = toolbar["stats"]
