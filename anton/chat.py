@@ -1226,7 +1226,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     toolbar_text = ""
 
     def _bottom_toolbar():
-        return HTML(f"<style bg='#1a1a2e' fg='#555570'>{toolbar_text}</style>") if toolbar_text else ""
+        return HTML(f"\n<style bg='#1a1a2e' fg='#555570'>{toolbar_text}</style>") if toolbar_text else ""
 
     prompt_session: PromptSession[str] = PromptSession(
         mouse_support=False,
