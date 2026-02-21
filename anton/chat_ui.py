@@ -132,7 +132,6 @@ class StreamDisplay:
             self._console.print(Markdown(self._buffer))
 
         self._console.print()
-        self._console.print()
 
     def abort(self) -> None:
         if self._live is not None:
