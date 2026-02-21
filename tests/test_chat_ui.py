@@ -44,7 +44,7 @@ class TestStreamDisplay:
         live = MockLive.return_value
 
         display.append_text("test output")
-        display.finish(input_tokens=128, output_tokens=342, elapsed=2.3, ttft=0.48)
+        display.finish()
 
         live.stop.assert_called_once()
         # Should print the response and stats

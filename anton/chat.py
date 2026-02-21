@@ -1221,9 +1221,17 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     display = StreamDisplay(console)
 
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.formatted_text import ANSI, HTML
 
-    prompt_session: PromptSession[str] = PromptSession(mouse_support=False)
+    toolbar_text = ""
+
+    def _bottom_toolbar():
+        return HTML(f"<style bg='#1a1a2e' fg='#555570'>{toolbar_text}</style>") if toolbar_text else ""
+
+    prompt_session: PromptSession[str] = PromptSession(
+        mouse_support=False,
+        bottom_toolbar=_bottom_toolbar,
+    )
 
     try:
         while True:
@@ -1299,7 +1307,11 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         total_output += event.response.usage.output_tokens
 
                 elapsed = time.monotonic() - t0
-                display.finish(total_input, total_output, elapsed, ttft)
+                parts = [f"{elapsed:.1f}s", f"{total_input} in / {total_output} out"]
+                if ttft is not None:
+                    parts.append(f"TTFT {int(ttft * 1000)}ms")
+                toolbar_text = "  ".join(parts)
+                display.finish()
             except anthropic.AuthenticationError:
                 display.abort()
                 console.print()

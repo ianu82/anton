@@ -112,7 +112,7 @@ class StreamDisplay:
         )
         self._live.update(spinner)
 
-    def finish(self, input_tokens: int, output_tokens: int, elapsed: float, ttft: float | None) -> None:
+    def finish(self) -> None:
         if self._live is not None:
             self._live.stop()
             self._live = None
@@ -122,12 +122,7 @@ class StreamDisplay:
             self._console.print(Text("anton> ", style="anton.cyan"), end="")
             self._console.print(Markdown(self._buffer))
 
-        # Stats line
-        parts = [f"{input_tokens} in / {output_tokens} out", f"{elapsed:.1f}s"]
-        if ttft is not None:
-            parts.append(f"TTFT {int(ttft * 1000)}ms")
-        stats = "  ".join(parts)
-        self._console.print(Text(stats, style="anton.muted"))
+        self._console.print()
         self._console.print()
 
     def abort(self) -> None:
