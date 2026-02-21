@@ -14,21 +14,21 @@ if TYPE_CHECKING:
 
 TAGLINES = [
     "autonomous by design",
-    "your code, my plan",
+    "your problem, my obsession",
     "no meetings, just results",
     "ctrl+c is my safe word",
-    "ships while you sleep",
-    "less yak-shaving, more shipping",
-    "pair programming without the small talk",
-    "turning TODOs into DONEs",
-    "git push and chill",
-    "breaking prod so you don't have to",
+    "thinks while you sleep",
+    "less overthinking, more solving",
+    "the coworker who actually listens",
+    "turning 'hmm' into 'done'",
+    "ask me anything, regret nothing",
+    "breaking assumptions so you don't have to",
     "coffee not required",
-    "one task, zero excuses",
+    "one question away from useful",
     "like a coworker who reads the docs",
     "the intern who never sleeps",
-    "sudo make me a sandwich",
-    "async everything, regret nothing",
+    "you talk, I figure it out",
+    "curiosity-driven problem solving",
 ]
 
 
