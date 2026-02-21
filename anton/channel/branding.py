@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import random
+import sys
+import time
 from typing import TYPE_CHECKING
 
 from rich.columns import Columns
+from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
@@ -31,18 +34,63 @@ TAGLINES = [
     "curiosity-driven problem solving",
 ]
 
+BUBBLE_PHRASES = [
+    "\u2661\u2661\u2661\u2661",
+    "sup",
+    "let's go",
+    "ask me",
+    "ready",
+    "hmm...",
+    "hi boss",
+    "what's the plan?",
+    "I'm here",
+    "try me",
+]
+
+# Mouth chars: smile, talking open, talking mid
+_MOUTH_SMILE = "\u1d17"   # ᴗ
+_MOUTH_OPEN = "o"
+_MOUTH_MID = "\u203f"     # ‿
+_MOUTH_TALK = [_MOUTH_OPEN, _MOUTH_MID]
+
 
 def pick_tagline(seed: int | None = None) -> str:
     rng = random.Random(seed)
     return rng.choice(TAGLINES)
 
 
-def _render_robot(console: Console) -> None:
-    """Render the ASCII robot with cyan glow on the frame and name."""
+def _build_robot_text(mouth: str, bubble: str) -> Text:
+    """Build the full robot as a Rich Text object with styling."""
+    g = "bold cyan"
+    m = "dim"
+    # Pad bubble to avoid layout jitter (longest phrase is ~16 chars)
+    padded = bubble.ljust(16)
+    lines = [
+        (f"        \u2590\n", g),
+        (f"   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584   ", g),
+        (f"{padded}\n", g),
+        (f" \u2588\u2588", g),
+        (f"  (\u00b0{mouth}\u00b0) ", m),
+        (f"\u2588\u2588\n", g),
+        (f"   \u2580\u2588\u2584\u2588\u2588\u2584\u2588\u2580", g),
+        (f"          \u2584\u2580\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588\u2580\u2588 \u2588\u2584 \u2588\n", g),
+        (f"    \u2590   \u2590", g),
+        (f"            \u2588\u2580\u2588 \u2588 \u2580\u2588  \u2588  \u2588\u2584\u2588 \u2588 \u2580\u2588\n", g),
+        (f"    \u2590   \u2590\n", g),
+    ]
+    text = Text()
+    for content, style in lines:
+        text.append(content, style=style)
+    return text
+
+
+def _render_robot_static(console: Console, bubble: str = "\u2661\u2661\u2661\u2661") -> None:
+    """Render the static ASCII robot (used as fallback)."""
     g = "anton.glow"
     m = "anton.muted"
+    padded = bubble.ljust(16)
     console.print(f"[{g}]        \u2590[/]")
-    console.print(f"[{g}]   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584[/]   [{g}]\u2661\u2661\u2661\u2661[/]")
+    console.print(f"[{g}]   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584[/]   [{g}]{padded}[/]")
     console.print(f"[{g}] \u2588\u2588[/]  [{m}](\u00b0\u1d17\u00b0)[/] [{g}]\u2588\u2588[/]")
     console.print(
         f"[{g}]   \u2580\u2588\u2584\u2588\u2588\u2584\u2588\u2580[/]"
@@ -55,13 +103,67 @@ def _render_robot(console: Console) -> None:
     console.print(f"[{g}]    \u2590   \u2590[/]")
 
 
-def render_banner(console: Console) -> None:
+def _animate_banner(console: Console) -> None:
+    """Run the typing animation on the robot's speech bubble."""
+    rng = random.Random()
+    phrases = list(BUBBLE_PHRASES)
+    # Always start with hearts, pick 2-3 random others, end with hearts
+    middle = [p for p in phrases if p != "\u2661\u2661\u2661\u2661"]
+    rng.shuffle(middle)
+    sequence = ["\u2661\u2661\u2661\u2661"] + middle[:3] + ["\u2661\u2661\u2661\u2661"]
+
+    type_speed = 0.06   # seconds per character
+    pause_after = 0.4   # pause after full phrase
+    clear_speed = 0.02  # speed of clearing
+
+    with Live(
+        _build_robot_text(_MOUTH_SMILE, ""),
+        console=console,
+        refresh_per_second=30,
+        transient=True,
+    ) as live:
+        for i, phrase in enumerate(sequence):
+            # Type in the phrase character by character
+            for j in range(1, len(phrase) + 1):
+                mouth = _MOUTH_TALK[j % 2]
+                live.update(_build_robot_text(mouth, phrase[:j]))
+                time.sleep(type_speed)
+
+            # Show full phrase with smile
+            live.update(_build_robot_text(_MOUTH_SMILE, phrase))
+            time.sleep(pause_after)
+
+            # Clear (except for the last phrase — keep it)
+            if i < len(sequence) - 1:
+                for j in range(len(phrase), 0, -1):
+                    live.update(_build_robot_text(_MOUTH_SMILE, phrase[:j - 1]))
+                    time.sleep(clear_speed)
+                time.sleep(0.1)
+
+        # Final frame with smile and hearts
+        live.update(_build_robot_text(_MOUTH_SMILE, "\u2661\u2661\u2661\u2661"))
+        time.sleep(0.2)
+
+    # Print the static final robot so it stays on screen
+    _render_robot_static(console, "\u2661\u2661\u2661\u2661")
+
+
+def render_banner(console: Console, *, animate: bool = True) -> None:
     tagline = pick_tagline()
-    _render_robot(console)
+
+    # Animate only on interactive terminals
+    if animate and sys.stdout.isatty():
+        try:
+            _animate_banner(console)
+        except Exception:
+            _render_robot_static(console)
+    else:
+        _render_robot_static(console)
+
+    console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print(
         f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
     )
-    console.print()
 
 
 def render_dashboard(console: Console) -> None:
@@ -72,10 +174,12 @@ def render_dashboard(console: Console) -> None:
     settings = AntonSettings()
     tagline = pick_tagline()
 
-    _render_robot(console)
+    _render_robot_static(console)
+    console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print(
         f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
     )
+    console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
     # Count skills

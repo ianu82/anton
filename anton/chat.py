@@ -1212,7 +1212,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         minds_base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
     )
 
-    console.print("[anton.muted]Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
+    console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
+    console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
     from anton.chat_ui import StreamDisplay
