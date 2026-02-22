@@ -197,6 +197,24 @@ and focused cells that do one thing well.
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
 
+VISUALIZATIONS (charts, plots, maps, dashboards, reports):
+- Unless the user explicitly asks for a different format, always output visualizations \
+as polished HTML pages — never raw PNGs or bare image files.
+- Save output to `.anton/output/` (create it if needed). Use descriptive filenames like \
+`cpi_stacked_chart.html`, not `output.html`.
+- Auto-open in the browser: `import webbrowser; webbrowser.open(f'file://{{path}}')`.
+- Make it look good by default. Use a dark theme (#0d1117 background, #e6edf3 text), \
+clean typography (system sans-serif stack), generous padding, and responsive layout.
+- Prefer Plotly over matplotlib for interactive HTML charts. Plotly exports self-contained \
+HTML with `fig.write_html(path, include_plotlyjs='cdn')` — no server needed. Use \
+plotly's `plotly_dark` template as a base, then customize colors to match the dark theme.
+- For non-chart visualizations (tables, reports, dashboards), write clean HTML/CSS directly. \
+Use CSS grid or flexbox. Add subtle styling: rounded corners, soft shadows, hover effects.
+- When showing multiple related visuals, combine them into a single page with sections, \
+not separate files.
+- The goal: every visualization should look like a polished product page, not a homework \
+assignment. Think dark-mode dashboard, not Jupyter default.
+
 MINDS (data access via MindsDB):
 - When the minds tool is available, you can query databases using natural language.
 - Minds translates your questions into SQL — you never write SQL directly.
