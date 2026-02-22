@@ -35,7 +35,8 @@ class TestStreamDisplay:
         display.append_text("Hello ")
         display.append_text("world!")
 
-        assert display._buffer == "Hello world!"
+        # Before any tool use, text goes to _initial_text
+        assert display._initial_text == "Hello world!"
         assert live.update.call_count == 2
 
     @patch("anton.chat_ui.Live")
@@ -140,15 +141,19 @@ class TestActivityTracking:
         display, console = self._make_display()
         display.start()
 
+        # Initial text before tools
+        display.append_text("Let me check...")
+
         display.on_tool_use_start("tool_1", "scratchpad")
         display.on_tool_use_delta("tool_1", '{"action": "exec", "name": "pad"}')
         display.on_tool_use_end("tool_1")
 
+        # Answer text after tools
         display.append_text("Here's what I found...")
         display.finish()
 
-        # finish should print: activity tree, anton> prefix, markdown, and trailing newline
-        assert console.print.call_count >= 3
+        # finish should print: anton> + initial, activity tree, answer markdown, trailing newline
+        assert console.print.call_count >= 4
 
     @patch("anton.chat_ui.Live")
     def test_no_activities_no_tree(self, MockLive):
@@ -198,3 +203,27 @@ class TestActivityTracking:
     def test_tool_display_text_unknown_tool(self):
         result = _tool_display_text("some_new_tool", '{"foo": "bar"}')
         assert result == "some_new_tool"
+
+    @patch("anton.chat_ui.Live")
+    def test_text_routes_to_initial_before_tools(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.append_text("Let me check...")
+        assert display._initial_text == "Let me check..."
+        assert display._buffer == ""
+        assert not display._in_tool_phase
+
+    @patch("anton.chat_ui.Live")
+    def test_text_routes_to_buffer_after_tools(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.append_text("Initial text")
+        display.on_tool_use_start("tool_1", "scratchpad")
+        display.append_text("Answer text")
+
+        assert display._initial_text == "Initial text"
+        assert display._buffer == "Answer text"
+        assert display._in_tool_phase
+        assert display._answer_started

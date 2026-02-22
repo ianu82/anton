@@ -114,11 +114,14 @@ class StreamDisplay:
     def __init__(self, console: Console, toolbar: dict | None = None) -> None:
         self._console = console
         self._live: object | None = None
+        self._initial_text = ""
         self._buffer = ""
         self._started = False
         self._toolbar = toolbar
         self._activities: list[_ToolActivity] = []
         self._thinking_msg: str = ""
+        self._in_tool_phase = False
+        self._answer_started = False
 
     def _set_status(self, text: str) -> None:
         if self._toolbar is not None:
@@ -136,19 +139,23 @@ class StreamDisplay:
             transient=True,
         )
         self._live.start()
+        self._initial_text = ""
         self._buffer = ""
         self._started = False
         self._activities = []
+        self._in_tool_phase = False
+        self._answer_started = False
 
     def append_text(self, delta: str) -> None:
         if self._live is None:
             return
-        self._buffer += delta
-        self._started = True
-        if self._activities:
-            self._live.update(Group(self._build_activity_tree(), Markdown(self._buffer)))
+        if self._in_tool_phase:
+            self._buffer += delta
+            self._answer_started = True
         else:
-            self._live.update(Markdown(self._buffer))
+            self._initial_text += delta
+        self._started = True
+        self._refresh_live()
 
     def show_tool_result(self, content: str) -> None:
         """Display a tool result (e.g. scratchpad dump) directly to the user."""
@@ -158,10 +165,7 @@ class StreamDisplay:
             self._buffer += "\n\n"
         self._buffer += content
         self._started = True
-        if self._activities:
-            self._live.update(Group(self._build_activity_tree(), Markdown(self._buffer)))
-        else:
-            self._live.update(Markdown(self._buffer))
+        self._refresh_live()
 
     def show_tool_execution(self, task: str) -> None:
         """Backward-compatible wrapper — delegates to on_tool_use_start."""
@@ -171,6 +175,7 @@ class StreamDisplay:
         """Track a new tool use and update the live display."""
         if self._live is None:
             return
+        self._in_tool_phase = True
         activity = _ToolActivity(tool_id=tool_id, name=name)
         self._activities.append(activity)
         self._refresh_live()
@@ -220,14 +225,22 @@ class StreamDisplay:
                 raw = "".join(act.json_parts)
                 act.description = _tool_display_text(act.name, raw)
 
-        # Print finalized activity summary before the response
         if self._activities:
+            # Print anton> + initial text
+            if self._initial_text:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(self._initial_text))
+            # Print finalized activity tree
             self._console.print(self._build_activity_tree(final=True))
-
-        # Print final rendered response
-        if self._buffer:
-            self._console.print(Text("anton> ", style="anton.cyan"), end="")
-            self._console.print(Markdown(self._buffer))
+            # Print answer
+            if self._buffer:
+                self._console.print(Markdown(self._buffer))
+        else:
+            # No tools — print response normally
+            all_text = self._initial_text + self._buffer
+            if all_text:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(all_text))
 
         self._console.print()
 
@@ -241,9 +254,12 @@ class StreamDisplay:
     def _build_activity_tree(self, final: bool = False) -> Text:
         """Render the activity tree as styled Text."""
         lines = Text()
-        for act in self._activities:
+        for i, act in enumerate(self._activities):
             label = act.description or _TOOL_LABELS.get(act.name, act.name)
-            lines.append("  ")
+            if i == 0:
+                lines.append("\u23bf ")
+            else:
+                lines.append("  ")
             lines.append(label, style="bold")
             lines.append("\n")
             # Sub-progress for execute_task
@@ -252,17 +268,41 @@ class StreamDisplay:
                     lines.append(f"  \u23bf Done ({act.step_count} step{'s' if act.step_count != 1 else ''})\n", style="anton.muted")
                 elif not final and act.current_progress:
                     lines.append(f"  \u23bf {act.current_progress}\n", style="anton.muted")
-        if final:
-            lines.append("\n")
         return lines
 
     def _refresh_live(self) -> None:
-        """Recompose the live display with spinner + activity tree."""
+        """Recompose the live display: anton> initial, spinner, tree, answer."""
         if self._live is None:
             return
-        spinner = Spinner("dots", text=Text(f" {self._thinking_msg}", style="anton.muted"))
-        tree = self._build_activity_tree()
-        if self._started and self._buffer:
-            self._live.update(Group(tree, Markdown(self._buffer)))
+
+        parts: list = []
+
+        if self._activities:
+            # Show anton> + initial text at top
+            if self._initial_text:
+                header = Text()
+                header.append("anton> ", style="anton.cyan")
+                header.append(self._initial_text.rstrip())
+                parts.append(header)
+
+            # Spinner while tools are running (before answer streams)
+            if not self._answer_started:
+                spinner = Spinner("dots", text=Text(f" {self._thinking_msg}", style="anton.muted"))
+                parts.append(spinner)
+
+            # Activity tree
+            parts.append(self._build_activity_tree())
+
+            # Answer text below tree
+            if self._buffer:
+                parts.append(Text())
+                parts.append(Markdown(self._buffer))
+        elif self._initial_text:
+            # Pure text streaming, no tools yet
+            parts.append(Markdown(self._initial_text))
         else:
-            self._live.update(Group(spinner, tree))
+            # Nothing yet — just spinner
+            spinner = Spinner("dots", text=Text(f" {self._thinking_msg}", style="anton.muted"))
+            parts.append(spinner)
+
+        self._live.update(Group(*parts) if len(parts) > 1 else parts[0])
