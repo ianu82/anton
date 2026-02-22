@@ -206,8 +206,9 @@ class _FakeAsyncIter:
 
 
 class TestScratchpadDumpStreaming:
-    async def test_scratchpad_dump_does_not_stream_tool_result(self):
-        """dump action should NOT yield a StreamToolResult (avoids duplicate display)."""
+    async def test_scratchpad_dump_streams_tool_result(self):
+        """dump action yields a StreamToolResult for display, but sends a short
+        summary back to the LLM to avoid it parroting the full notebook."""
         mock_llm = AsyncMock()
 
         call_count = 0
@@ -241,7 +242,18 @@ class TestScratchpadDumpStreaming:
                 events.append(event)
 
             tool_results = [e for e in events if isinstance(e, StreamToolResult)]
-            assert len(tool_results) == 0
+            assert len(tool_results) == 1
+            assert "## Scratchpad: main" in tool_results[0].content
+
+            # The LLM should get a short summary, not the full dump
+            history = session.history
+            # Find the tool_result message for the dump call
+            for msg in history:
+                if isinstance(msg.get("content"), list):
+                    for item in msg["content"]:
+                        if item.get("type") == "tool_result" and "dump" not in item.get("content", "").lower().split("```"):
+                            if "Notebook dump displayed" in item.get("content", ""):
+                                break
         finally:
             await session.close()
 

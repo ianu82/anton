@@ -812,6 +812,9 @@ class ChatSession:
                     result_text = self._handle_request_secret(tc.input)
                 elif tc.name == "scratchpad":
                     result_text = await self._handle_scratchpad(tc.input)
+                    if tc.input.get("action") == "dump":
+                        yield StreamToolResult(content=result_text)
+                        result_text = "Notebook dump displayed to user."
                 elif tc.name == "minds":
                     result_text = await self._handle_minds(tc.input)
                 else:
