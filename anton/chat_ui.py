@@ -214,6 +214,12 @@ class StreamDisplay:
             self._live.stop()
             self._live = None
 
+        # Eagerly finalize any activities that never got on_tool_use_end
+        for act in self._activities:
+            if not act.description and act.json_parts:
+                raw = "".join(act.json_parts)
+                act.description = _tool_display_text(act.name, raw)
+
         # Print finalized activity summary before the response
         if self._activities:
             self._console.print(self._build_activity_tree(final=True))
@@ -246,6 +252,8 @@ class StreamDisplay:
                     lines.append(f"  \u23bf Done ({act.step_count} step{'s' if act.step_count != 1 else ''})\n", style="anton.muted")
                 elif not final and act.current_progress:
                     lines.append(f"  \u23bf {act.current_progress}\n", style="anton.muted")
+        if final:
+            lines.append("\n")
         return lines
 
     def _refresh_live(self) -> None:
