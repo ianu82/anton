@@ -234,6 +234,7 @@ class StreamDisplay:
             self._console.print(self._build_activity_tree(final=True))
             # Print answer
             if self._buffer:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
                 self._console.print(Markdown(self._buffer))
         else:
             # No tools — print response normally
