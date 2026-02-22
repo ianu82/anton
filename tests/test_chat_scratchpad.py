@@ -206,8 +206,8 @@ class _FakeAsyncIter:
 
 
 class TestScratchpadDumpStreaming:
-    async def test_scratchpad_dump_streams_tool_result(self):
-        """dump action yields a StreamToolResult in the streaming path."""
+    async def test_scratchpad_dump_does_not_stream_tool_result(self):
+        """dump action should NOT yield a StreamToolResult (avoids duplicate display)."""
         mock_llm = AsyncMock()
 
         call_count = 0
@@ -241,9 +241,7 @@ class TestScratchpadDumpStreaming:
                 events.append(event)
 
             tool_results = [e for e in events if isinstance(e, StreamToolResult)]
-            assert len(tool_results) == 1
-            assert "```python" in tool_results[0].content
-            assert "## Scratchpad: main" in tool_results[0].content
+            assert len(tool_results) == 0
         finally:
             await session.close()
 
