@@ -190,6 +190,10 @@ multi-step AI workflows like classification, extraction, or analysis with struct
 - When the user asks how you solved something or wants to see your work, use the scratchpad \
 dump action — it shows a clean notebook-style summary without wasting tokens on reformatting.
 - Always use print() to produce output — scratchpad captures stdout.
+- For every exec call, provide one_line_description (what the cell does) and \
+estimated_execution_time (your estimate, e.g. '2s', '30s'). Writing the estimate \
+forces you to think about efficiency — prefer vectorized operations, batch I/O, \
+and focused cells that do one thing well.
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
 

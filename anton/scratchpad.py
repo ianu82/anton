@@ -317,6 +317,8 @@ class Cell:
     stdout: str
     stderr: str
     error: str | None
+    description: str = ""
+    estimated_time: str = ""
 
 
 @dataclass
@@ -413,7 +415,7 @@ class Scratchpad:
             env=env,
         )
 
-    async def execute(self, code: str) -> Cell:
+    async def execute(self, code: str, *, description: str = "", estimated_time: str = "") -> Cell:
         """Send code to the subprocess, read the JSON result, return a Cell."""
         if self._proc is None or self._proc.returncode is not None:
             # Process died — auto-note
@@ -422,6 +424,8 @@ class Scratchpad:
                 stdout="",
                 stderr="",
                 error="Scratchpad process is not running. Use reset to restart.",
+                description=description,
+                estimated_time=estimated_time,
             )
             self.cells.append(cell)
             return cell
@@ -442,6 +446,8 @@ class Scratchpad:
                 stdout="",
                 stderr="",
                 error=f"Cell timed out after {_CELL_TIMEOUT}s. Process killed — state lost. Use reset to restart.",
+                description=description,
+                estimated_time=estimated_time,
             )
             self.cells.append(cell)
             return cell
@@ -451,6 +457,8 @@ class Scratchpad:
             stdout=result_data.get("stdout", ""),
             stderr=result_data.get("stderr", ""),
             error=result_data.get("error"),
+            description=description,
+            estimated_time=estimated_time,
         )
         self.cells.append(cell)
         return cell
@@ -481,7 +489,11 @@ class Scratchpad:
 
         parts: list[str] = []
         for i, cell in enumerate(self.cells):
-            parts.append(f"--- Cell {i + 1} ---")
+            header = f"--- Cell {i + 1}"
+            if cell.description:
+                header += f": {cell.description}"
+            header += " ---"
+            parts.append(header)
             parts.append(cell.code)
             if cell.stdout:
                 parts.append(f"[stdout]\n{cell.stdout}")
@@ -531,7 +543,10 @@ class Scratchpad:
         parts: list[str] = [f"## Scratchpad: {self.name} ({len(numbered)} cells)"]
 
         for i, (num, cell) in enumerate(numbered):
-            parts.append(f"\n### Cell {num}")
+            header = f"\n### Cell {num}"
+            if cell.description:
+                header += f" \u2014 {cell.description}"
+            parts.append(header)
             parts.append(f"```python\n{cell.code}\n```\n")
 
             if cell.error:

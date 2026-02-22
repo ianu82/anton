@@ -204,6 +204,22 @@ class TestActivityTracking:
         result = _tool_display_text("some_new_tool", '{"foo": "bar"}')
         assert result == "some_new_tool"
 
+    def test_scratchpad_display_uses_one_line_description(self):
+        """one_line_description should be preferred over action for scratchpad."""
+        result = _tool_display_text(
+            "scratchpad",
+            '{"action": "exec", "name": "pad", "one_line_description": "Install packages"}',
+        )
+        assert result == "Scratchpad(Install packages)"
+
+    def test_scratchpad_display_falls_back_to_action(self):
+        """Without one_line_description, scratchpad should show action."""
+        result = _tool_display_text(
+            "scratchpad",
+            '{"action": "exec", "name": "pad"}',
+        )
+        assert result == "Scratchpad(exec)"
+
     @patch("anton.chat_ui.Live")
     def test_text_routes_to_initial_before_tools(self, MockLive):
         display, _ = self._make_display()

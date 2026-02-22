@@ -297,6 +297,80 @@ class TestScratchpadRenderNotebook:
         assert len(result) < len(text)
 
 
+class TestCellMetadata:
+    async def test_cell_stores_description_and_estimated_time(self):
+        """execute() should store description and estimated_time on the Cell."""
+        pad = Scratchpad(name="meta")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "print('hi')",
+                description="Say hello",
+                estimated_time="1s",
+            )
+            assert cell.description == "Say hello"
+            assert cell.estimated_time == "1s"
+            assert cell.stdout.strip() == "hi"
+        finally:
+            await pad.close()
+
+    async def test_cell_defaults_empty_metadata(self):
+        """Without arguments, description and estimated_time default to empty."""
+        pad = Scratchpad(name="defaults")
+        await pad.start()
+        try:
+            cell = await pad.execute("print(1)")
+            assert cell.description == ""
+            assert cell.estimated_time == ""
+        finally:
+            await pad.close()
+
+    async def test_view_shows_description_in_header(self):
+        """view() should include description in the cell header."""
+        pad = Scratchpad(name="view-desc")
+        await pad.start()
+        try:
+            await pad.execute("print(1)", description="Count to one")
+            output = pad.view()
+            assert "--- Cell 1: Count to one ---" in output
+        finally:
+            await pad.close()
+
+    async def test_view_without_description(self):
+        """view() without description falls back to plain header."""
+        pad = Scratchpad(name="view-plain")
+        await pad.start()
+        try:
+            await pad.execute("print(1)")
+            output = pad.view()
+            assert "--- Cell 1 ---" in output
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_shows_description(self):
+        """render_notebook() should include description in markdown header."""
+        pad = Scratchpad(name="nb-desc")
+        await pad.start()
+        try:
+            await pad.execute("print(1)", description="Count to one")
+            md = pad.render_notebook()
+            assert "### Cell 1 \u2014 Count to one" in md
+        finally:
+            await pad.close()
+
+    async def test_render_notebook_without_description(self):
+        """render_notebook() without description uses plain header."""
+        pad = Scratchpad(name="nb-plain")
+        await pad.start()
+        try:
+            await pad.execute("print(1)")
+            md = pad.render_notebook()
+            assert "### Cell 1" in md
+            assert "\u2014" not in md
+        finally:
+            await pad.close()
+
+
 class TestScratchpadEnvironment:
     async def test_env_vars_accessible(self, monkeypatch):
         """Secrets from .anton/.env (in os.environ) are accessible in scratchpad."""

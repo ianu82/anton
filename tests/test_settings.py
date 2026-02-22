@@ -23,7 +23,7 @@ class TestAntonSettingsDefaults:
 
     def test_default_coding_model(self):
         s = AntonSettings(anthropic_api_key="test")
-        assert s.coding_model == "claude-opus-4-6"
+        assert s.coding_model == "claude-haiku-4-5-20251001"
 
     def test_default_skills_dir(self):
         s = AntonSettings(anthropic_api_key="test")

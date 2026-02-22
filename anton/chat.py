@@ -152,6 +152,14 @@ SCRATCHPAD_TOOL = {
                 "items": {"type": "string"},
                 "description": "Package names to install (install only).",
             },
+            "one_line_description": {
+                "type": "string",
+                "description": "Brief description of what this cell does (e.g. 'Scrape listing prices'). Required for exec.",
+            },
+            "estimated_execution_time": {
+                "type": "string",
+                "description": "Estimated execution time (e.g. '2s', '30s', '2min'). Think about efficiency — write focused, fast code.",
+            },
         },
         "required": ["action", "name"],
     },
@@ -434,7 +442,9 @@ class ChatSession:
             if not code or not code.strip():
                 return "No code provided."
             pad = await self._scratchpads.get_or_create(name)
-            cell = await pad.execute(code)
+            description = tc_input.get("one_line_description", "")
+            estimated_time = tc_input.get("estimated_execution_time", "")
+            cell = await pad.execute(code, description=description, estimated_time=estimated_time)
 
             parts: list[str] = []
             if cell.stdout:
@@ -929,8 +939,8 @@ async def _handle_setup(
 
     # --- Models ---
     defaults = {
-        "anthropic": ("claude-sonnet-4-6", "claude-opus-4-6"),
-        "openai": ("gpt-4.1", "gpt-4.1"),
+        "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
+        "openai": ("gpt-4.1", "gpt-4.1-mini"),
     }
     default_planning, default_coding = defaults.get(provider, ("", ""))
 

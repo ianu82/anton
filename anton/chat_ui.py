@@ -48,7 +48,7 @@ def _tool_display_text(name: str, input_json: str) -> str:
     if name == "execute_task":
         desc = data.get("task", "")
     elif name == "scratchpad":
-        desc = data.get("action", "")
+        desc = data.get("one_line_description") or data.get("action", "")
     elif name == "minds":
         action = data.get("action", "")
         question = data.get("question", "")

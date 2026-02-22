@@ -27,7 +27,7 @@ class AntonSettings(BaseSettings):
     planning_provider: str = "anthropic"
     planning_model: str = "claude-sonnet-4-6"
     coding_provider: str = "anthropic"
-    coding_model: str = "claude-opus-4-6"
+    coding_model: str = "claude-haiku-4-5-20251001"
 
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
