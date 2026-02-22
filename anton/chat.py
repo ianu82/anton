@@ -18,6 +18,8 @@ from anton.llm.provider import (
     StreamTaskProgress,
     StreamTextDelta,
     StreamToolResult,
+    StreamToolUseDelta,
+    StreamToolUseEnd,
     StreamToolUseStart,
 )
 from anton.minds import MindsClient
@@ -1311,7 +1313,11 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     elif isinstance(event, StreamToolResult):
                         display.show_tool_result(event.content)
                     elif isinstance(event, StreamToolUseStart):
-                        display.show_tool_execution(event.name)
+                        display.on_tool_use_start(event.id, event.name)
+                    elif isinstance(event, StreamToolUseDelta):
+                        display.on_tool_use_delta(event.id, event.json_delta)
+                    elif isinstance(event, StreamToolUseEnd):
+                        display.on_tool_use_end(event.id)
                     elif isinstance(event, StreamTaskProgress):
                         display.update_progress(
                             event.phase, event.message, event.eta_seconds

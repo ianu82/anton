@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from anton.chat_ui import PHASE_LABELS, THINKING_MESSAGES, TOOL_MESSAGES, StreamDisplay
+from anton.chat_ui import PHASE_LABELS, THINKING_MESSAGES, TOOL_MESSAGES, StreamDisplay, _tool_display_text
 
 
 class TestMessageLists:
@@ -87,3 +87,114 @@ class TestStreamDisplay:
     def test_phase_labels_cover_all_phases(self):
         expected = {"memory_recall", "planning", "skill_discovery", "skill_building", "executing", "complete", "failed"}
         assert expected == set(PHASE_LABELS.keys())
+
+
+class TestActivityTracking:
+    def _make_display(self):
+        console = MagicMock()
+        toolbar = {"stats": "", "status": ""}
+        return StreamDisplay(console, toolbar=toolbar), console
+
+    @patch("anton.chat_ui.Live")
+    def test_tool_use_creates_activity(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.on_tool_use_start("tool_1", "scratchpad")
+
+        assert len(display._activities) == 1
+        assert display._activities[0].tool_id == "tool_1"
+        assert display._activities[0].name == "scratchpad"
+
+    @patch("anton.chat_ui.Live")
+    def test_json_delta_accumulation(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.on_tool_use_start("tool_1", "execute_task")
+        display.on_tool_use_delta("tool_1", '{"task":')
+        display.on_tool_use_delta("tool_1", ' "analyze the project"}')
+        display.on_tool_use_end("tool_1")
+
+        act = display._activities[0]
+        assert act.description == "Task(analyze the project)"
+
+    @patch("anton.chat_ui.Live")
+    def test_progress_associates_with_execute_task(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.on_tool_use_start("tool_1", "execute_task")
+        display.on_tool_use_delta("tool_1", '{"task": "do stuff"}')
+        display.on_tool_use_end("tool_1")
+
+        display.update_progress("executing", "Step 1/3: read file", eta=5.0)
+        display.update_progress("executing", "Step 2/3: run tests", eta=3.0)
+
+        act = display._activities[0]
+        assert act.step_count == 2
+        assert "Step 2/3" in act.current_progress
+
+    @patch("anton.chat_ui.Live")
+    def test_finish_prints_activity_summary(self, MockLive):
+        display, console = self._make_display()
+        display.start()
+
+        display.on_tool_use_start("tool_1", "scratchpad")
+        display.on_tool_use_delta("tool_1", '{"action": "exec", "name": "pad"}')
+        display.on_tool_use_end("tool_1")
+
+        display.append_text("Here's what I found...")
+        display.finish()
+
+        # finish should print: activity tree, anton> prefix, markdown, and trailing newline
+        assert console.print.call_count >= 3
+
+    @patch("anton.chat_ui.Live")
+    def test_no_activities_no_tree(self, MockLive):
+        display, console = self._make_display()
+        display.start()
+
+        display.append_text("Just text, no tools")
+        display.finish()
+
+        # Should print: anton> prefix, markdown, trailing newline — but no activity tree
+        # The first print should NOT be a Text with tool labels
+        calls = console.print.call_args_list
+        # With no activities, the first call is the "anton> " prefix
+        from rich.text import Text as RichText
+        first_arg = calls[0][0][0] if calls[0][0] else None
+        assert isinstance(first_arg, RichText)
+        assert "anton>" in first_arg.plain
+
+    @patch("anton.chat_ui.Live")
+    def test_multiple_tool_calls(self, MockLive):
+        display, _ = self._make_display()
+        display.start()
+
+        display.on_tool_use_start("tool_1", "scratchpad")
+        display.on_tool_use_delta("tool_1", '{"action": "exec", "name": "pad"}')
+        display.on_tool_use_end("tool_1")
+
+        display.on_tool_use_start("tool_2", "execute_task")
+        display.on_tool_use_delta("tool_2", '{"task": "run tests"}')
+        display.on_tool_use_end("tool_2")
+
+        assert len(display._activities) == 2
+        assert display._activities[0].description == "Scratchpad(exec)"
+        assert display._activities[1].description == "Task(run tests)"
+
+    def test_malformed_json_fallback(self):
+        # Bad JSON should not crash, falls back to just the label
+        result = _tool_display_text("execute_task", "{broken json")
+        assert result == "Task"
+
+    def test_tool_display_text_truncation(self):
+        long_task = "a" * 100
+        result = _tool_display_text("execute_task", f'{{"task": "{long_task}"}}')
+        assert len(result) <= len("Task()") + 60
+        assert result.endswith("\u2026)")
+
+    def test_tool_display_text_unknown_tool(self):
+        result = _tool_display_text("some_new_tool", '{"foo": "bar"}')
+        assert result == "some_new_tool"
