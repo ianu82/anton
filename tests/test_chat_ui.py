@@ -152,7 +152,7 @@ class TestActivityTracking:
         display.append_text("Here's what I found...")
         display.finish()
 
-        # finish should print: anton> + initial, activity tree, answer markdown, trailing newline
+        # finish should print: muted initial, activity tree, anton> + answer markdown, trailing newline
         assert console.print.call_count >= 4
 
     @patch("anton.chat_ui.Live")

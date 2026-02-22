@@ -226,10 +226,9 @@ class StreamDisplay:
                 act.description = _tool_display_text(act.name, raw)
 
         if self._activities:
-            # Print anton> + initial text
+            # Print initial text as muted "inner speech" (thinking before acting)
             if self._initial_text:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._console.print(Markdown(self._initial_text))
+                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
             # Print finalized activity tree
             self._console.print(self._build_activity_tree(final=True))
             # Print answer
@@ -279,12 +278,9 @@ class StreamDisplay:
         parts: list = []
 
         if self._activities:
-            # Show anton> + initial text at top
+            # Show initial text as muted "inner speech" at top
             if self._initial_text:
-                header = Text()
-                header.append("anton> ", style="anton.cyan")
-                header.append(self._initial_text.rstrip())
-                parts.append(header)
+                parts.append(Text(self._initial_text.rstrip(), style="anton.muted"))
 
             # Spinner while tools are running (before answer streams)
             if not self._answer_started:
