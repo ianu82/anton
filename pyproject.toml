@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anton"
-version = "0.2.4"
+dynamic = ["version"]
 description = "Autonomous coding copilot"
 requires-python = ">=3.11"
 dependencies = [
@@ -26,6 +26,10 @@ dev = [
 
 [project.scripts]
 anton = "anton.cli:app"
+
+[tool.hatch.version]
+source = "regex"
+path = "anton/__init__.py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
