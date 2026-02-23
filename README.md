@@ -182,7 +182,7 @@ uv tool uninstall anton
 
 ## Is "Anton" a Mind?
 
-Yes, at mindsDB we build intelligent AI systems that collaborate with people to accomplish tasks, inspired by the culture series books, so yes, Anton is a Mind :)
+Yes, at mindsDB we build AI systems that collaborate with people to accomplish tasks, inspired by the culture series books, so yes, Anton is a Mind :)
 
 ## Why the name "Anton"?
 
