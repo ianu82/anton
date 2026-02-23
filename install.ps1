@@ -3,11 +3,23 @@
 .SYNOPSIS
     Install Anton — autonomous AI coworker.
 .DESCRIPTION
-    Downloads and installs Anton via uv tool install.
+    Downloads and installs Anton via uv tool install into an isolated virtual environment.
     Run: irm https://raw.githubusercontent.com/mindsdb/anton/main/install.ps1 | iex
+.PARAMETER Force
+    Skip all confirmation prompts.
 #>
+param(
+    [switch]$Force
+)
 
 $ErrorActionPreference = "Stop"
+
+function Confirm-Step {
+    param([string]$Message)
+    if ($Force) { return $true }
+    $reply = Read-Host "  $Message [Y/n]"
+    return ($reply -eq '' -or $reply -match '^[yY]')
+}
 
 # ── 1. Branded logo ────────────────────────────────────────────────
 Write-Host ""
@@ -26,6 +38,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 # ── 3. Find or install uv ──────────────────────────────────────────
 $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+$needUv = $false
 
 if (-not $uvCmd) {
     $localUv = Join-Path $HOME ".local\bin\uv.exe"
@@ -42,6 +55,17 @@ if (-not $uvCmd) {
         Write-Host "  Found uv: $cargoUv"
     }
     else {
+        $needUv = $true
+    }
+}
+else {
+    Write-Host "  Found uv: $($uvCmd.Source)"
+}
+
+if ($needUv) {
+    Write-Host "warning: uv is not installed. It is required to manage anton's isolated environment." -ForegroundColor Yellow
+    Write-Host "  uv will be installed to ~\.local\bin via https://astral.sh/uv/install.ps1"
+    if (Confirm-Step "Install uv?") {
         Write-Host "  Installing uv..."
         & ([scriptblock]::Create((Invoke-RestMethod https://astral.sh/uv/install.ps1)))
         # Refresh PATH to pick up uv
@@ -49,9 +73,10 @@ if (-not $uvCmd) {
         $env:PATH = "$uvBinDir;$env:PATH"
         Write-Host "  Installed uv"
     }
-}
-else {
-    Write-Host "  Found uv: $($uvCmd.Source)"
+    else {
+        Write-Host "error: uv is required. Install it manually: https://docs.astral.sh/uv/getting-started/installation/" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Verify uv is available
@@ -62,11 +87,35 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 # ── 4. Install anton via uv tool ───────────────────────────────────
-Write-Host "  Installing anton..."
-uv tool install "git+https://github.com/mindsdb/anton.git" --force
-Write-Host "  Installed anton"
+Write-Host ""
+Write-Host "  This will install:"
+Write-Host "    - anton (from git+https://github.com/mindsdb/anton.git)"
+Write-Host "    - Into an isolated virtual environment managed by uv"
+Write-Host "    - Python 3.11+ will be downloaded automatically if not present"
+Write-Host ""
 
-# ── 5. Ensure ~/.local/bin is in user PATH ─────────────────────────
+if (Confirm-Step "Proceed with installation?") {
+    Write-Host "  Installing anton into an isolated venv..."
+    uv tool install "git+https://github.com/mindsdb/anton.git" --force
+    Write-Host "  Installed anton"
+}
+else {
+    Write-Host "  Installation cancelled."
+    exit 0
+}
+
+# ── 5. Verify the venv was created ─────────────────────────────────
+$uvToolDir = Join-Path $HOME ".local\share\uv\tools\anton"
+if (Test-Path $uvToolDir) {
+    Write-Host "  Venv: $uvToolDir"
+}
+else {
+    Write-Host "warning: Could not verify anton's virtual environment." -ForegroundColor Yellow
+    Write-Host "  Expected at: $uvToolDir"
+    Write-Host "  Anton may still work — uv manages the environment internally."
+}
+
+# ── 6. Ensure ~/.local/bin is in user PATH ─────────────────────────
 $uvBinDir = Join-Path $HOME ".local\bin"
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
@@ -85,7 +134,7 @@ else {
     Write-Host "  Added $uvBinDir to user PATH"
 }
 
-# ── 6. Success message ──────────────────────────────────────────────
+# ── 7. Success message ──────────────────────────────────────────────
 Write-Host ""
 Write-Host "  ✓ anton installed successfully!" -ForegroundColor Green
 Write-Host ""
