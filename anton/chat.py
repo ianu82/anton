@@ -1330,4 +1330,3 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     console.print()
     console.print("[anton.muted]See you.[/]")
     await session.close()
-    await channel.close()
