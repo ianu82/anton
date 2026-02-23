@@ -14,13 +14,29 @@ Anton is an advanced AI coworker. You tell it what you need done and it figures 
 
 ## Quick start
 
+**macOS / Linux:**
 ```bash
 curl -sSf https://raw.githubusercontent.com/mindsdb/anton/main/install.sh | sh
-source ~/.zshrc  # or restart your terminal
+```
+
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/mindsdb/anton/main/install.ps1 | iex
+```
+
+Open a new terminal, then:
+```
 anton
 ```
 
 That drops you into a conversation. Talk to Anton like a person.
+
+### Prerequisites
+
+- **git** — required ([macOS](https://git-scm.com/downloads/mac) / `sudo apt install git` / `winget install Git.Git`)
+- **Python 3.11+** — optional (uv downloads it automatically if missing)
+- **curl** — macOS/Linux only, usually pre-installed
+- Internet connection. No admin/sudo required.
 
 Try this:
 
@@ -149,6 +165,20 @@ ANTON_CODING_MODEL       # Model for coding (default: claude-opus-4-6)
 ```
 
 Env loading order: `cwd/.env` → `.anton/.env` → `~/.anton/.env`
+
+## Manual install
+
+If you already have [uv](https://docs.astral.sh/uv/):
+```
+uv tool install git+https://github.com/mindsdb/anton.git
+```
+
+## Upgrade / Uninstall
+
+```
+uv tool upgrade anton
+uv tool uninstall anton
+```
 
 ## Why "Anton"?
 

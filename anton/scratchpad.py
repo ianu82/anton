@@ -357,9 +357,8 @@ class Scratchpad:
             import site as _site
             parent_site = _site.getsitepackages()
             # Find the child venv's site-packages to place the .pth file
-            child_lib = os.path.join(self._venv_dir, "lib")
             child_site = None
-            for dirpath, dirnames, _ in os.walk(child_lib):
+            for dirpath, dirnames, _ in os.walk(self._venv_dir):
                 if "site-packages" in dirnames:
                     child_site = os.path.join(dirpath, "site-packages")
                     break

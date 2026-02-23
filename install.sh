@@ -10,8 +10,6 @@ RED='\033[31m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-ANTON_HOME="$HOME/.anton"
-VENV_DIR="$ANTON_HOME/venv"
 LOCAL_BIN="$HOME/.local/bin"
 REPO_URL="git+https://github.com/mindsdb/anton.git"
 
@@ -25,67 +23,52 @@ info "${CYAN} █▀█ █ ▀█  █  █▄█ █ ▀█${RESET}"
 info "${CYAN} autonomous coworker${RESET}"
 info ""
 
-# ── 2. Check for / install uv ──────────────────────────────────────
-USE_UV=1
+# ── 2. Check prerequisites ──────────────────────────────────────────
+if ! command -v git >/dev/null 2>&1; then
+    error "git is required but not found."
+    info "  Install it with your package manager:"
+    info "    macOS:  xcode-select --install"
+    info "    Ubuntu: sudo apt install git"
+    info "    Fedora: sudo dnf install git"
+    exit 1
+fi
 
+if ! command -v curl >/dev/null 2>&1; then
+    error "curl is required but not found."
+    info "  Install it with your package manager:"
+    info "    Ubuntu: sudo apt install curl"
+    info "    Fedora: sudo dnf install curl"
+    exit 1
+fi
+
+# ── 3. Find or install uv ──────────────────────────────────────────
 if command -v uv >/dev/null 2>&1; then
     info "  Found uv: $(command -v uv)"
 elif [ -f "$HOME/.local/bin/uv" ]; then
     export PATH="$LOCAL_BIN:$PATH"
     info "  Found uv: $HOME/.local/bin/uv"
+elif [ -f "$HOME/.cargo/bin/uv" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    info "  Found uv: $HOME/.cargo/bin/uv"
 else
     info "  Installing uv..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
-        # Source uv's env setup if available
-        if [ -f "$HOME/.local/bin/env" ]; then
-            . "$HOME/.local/bin/env"
-        else
-            export PATH="$LOCAL_BIN:$PATH"
-        fi
-        info "  Installed uv: $(command -v uv)"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+    # Source uv's env setup if available
+    if [ -f "$HOME/.local/bin/env" ]; then
+        . "$HOME/.local/bin/env"
     else
-        info "  Could not install uv — falling back to python3 + pip"
-        USE_UV=0
+        export PATH="$LOCAL_BIN:$PATH"
     fi
+    info "  Installed uv: $(command -v uv)"
 fi
 
-# Verify python3 exists if falling back
-if [ "$USE_UV" -eq 0 ]; then
-    if ! command -v python3 >/dev/null 2>&1; then
-        error "python3 not found. Please install Python 3 and try again."
-        exit 1
-    fi
-fi
+# ── 4. Install anton via uv tool ───────────────────────────────────
+info "  Installing anton..."
+uv tool install "$REPO_URL" --force
+info "  Installed anton"
 
-# ── 3. Create venv and install anton ───────────────────────────────
-info "  Creating venv at ${ANTON_HOME}/venv..."
-
-if [ "$USE_UV" -eq 1 ]; then
-    uv venv "$VENV_DIR" --quiet 2>/dev/null || uv venv "$VENV_DIR"
-    info "  Installing anton..."
-    uv pip install --python "$VENV_DIR/bin/python" "$REPO_URL" --quiet 2>/dev/null \
-        || uv pip install --python "$VENV_DIR/bin/python" "$REPO_URL"
-else
-    python3 -m venv "$VENV_DIR"
-    info "  Installing anton..."
-    "$VENV_DIR/bin/pip" install --upgrade pip --quiet
-    "$VENV_DIR/bin/pip" install "$REPO_URL" --quiet
-fi
-
-# Verify the binary was created
-if [ ! -f "$VENV_DIR/bin/anton" ]; then
-    error "Installation finished but anton binary not found at $VENV_DIR/bin/anton"
-    exit 1
-fi
-
-info "  Installed anton into ${VENV_DIR}"
-
-# ── 4. Add anton to PATH ──────────────────────────────────────────
-add_to_path() {
-    mkdir -p "$LOCAL_BIN"
-    ln -sf "$VENV_DIR/bin/anton" "$LOCAL_BIN/anton"
-    info "  Linked ${LOCAL_BIN}/anton"
-
+# ── 5. Ensure ~/.local/bin is in PATH ──────────────────────────────
+ensure_path() {
     # Check if ~/.local/bin is already in PATH
     case ":$PATH:" in
         *":$LOCAL_BIN:"*) return ;;
@@ -102,41 +85,27 @@ add_to_path() {
                 SHELL_RC="$HOME/.bashrc"
             fi
             ;;
+        fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
         *)    SHELL_RC="$HOME/.profile" ;;
     esac
-
-    LINE='export PATH="$HOME/.local/bin:$PATH"'
 
     # Only append if not already present
     if [ -f "$SHELL_RC" ] && grep -qF '.local/bin' "$SHELL_RC" 2>/dev/null; then
         return
     fi
 
-    printf '\n# Added by anton installer\n%s\n' "$LINE" >> "$SHELL_RC"
+    if [ "$SHELL_NAME" = "fish" ]; then
+        mkdir -p "$(dirname "$SHELL_RC")"
+        printf '\n# Added by anton installer\nfish_add_path %s\n' "$LOCAL_BIN" >> "$SHELL_RC"
+    else
+        printf '\n# Added by anton installer\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$SHELL_RC"
+    fi
     info "  Updated ${SHELL_RC}"
 }
 
-# If stdin is a terminal, prompt; otherwise default to yes (piped install)
-if [ -t 0 ]; then
-    printf "  Add anton to your PATH? [Y/n] "
-    read -r REPLY
-    case "$REPLY" in
-        [nN]*) ADD_PATH=0 ;;
-        *)     ADD_PATH=1 ;;
-    esac
-else
-    ADD_PATH=1
-fi
+ensure_path
 
-if [ "$ADD_PATH" -eq 1 ]; then
-    add_to_path
-else
-    info ""
-    info "  To use anton, add this to your PATH:"
-    info "    export PATH=\"${VENV_DIR}/bin:\$PATH\""
-fi
-
-# ── 5. Success message ────────────────────────────────────────────
+# ── 6. Success message ──────────────────────────────────────────────
 info ""
 info "${GREEN}  ✓ anton installed successfully!${RESET}"
 info ""
@@ -144,6 +113,9 @@ info "  Open a new terminal, then:"
 info ""
 info "    anton                                          ${CYAN}# Dashboard${RESET}"
 info "    anton run \"analyze last month's sales data\"    ${CYAN}# Give Anton a task${RESET}"
+info ""
+info "  Upgrade:    uv tool upgrade anton"
+info "  Uninstall:  uv tool uninstall anton"
 info ""
 info "  Config: ~/.anton/.env"
 info ""
