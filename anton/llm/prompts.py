@@ -193,6 +193,10 @@ multi-step AI workflows like classification, extraction, or analysis with struct
 - When the user asks how you solved something or wants to see your work, use the scratchpad \
 dump action — it shows a clean notebook-style summary without wasting tokens on reformatting.
 - Always use print() to produce output — scratchpad captures stdout.
+- IMPORTANT: The scratchpad starts with a clean namespace — nothing is pre-imported. \
+Always include all necessary imports at the top of each cell that uses them. \
+Re-importing is a no-op in Python so there is zero cost, and it guarantees the cell \
+works even if earlier cells failed or state was lost.
 - IMPORTANT: Each cell has a hard timeout of 120 seconds. If exceeded, the process is \
 killed and ALL state (variables, imports, data) is lost. For every exec call, provide \
 one_line_description and estimated_execution_time_seconds (integer). If your estimate \
