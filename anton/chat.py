@@ -1105,88 +1105,121 @@ async def _handle_setup(
     )
 
 
-async def _handle_minds_setup(
+async def _handle_minds_command(
     console: Console,
     settings: AntonSettings,
     workspace: Workspace,
     state: dict,
     self_awareness,
+    session: ChatSession,
 ) -> ChatSession:
-    """Interactive wizard to configure Minds (MindsDB) integration."""
+    """Unified /minds command: status, setup, browse, and toggle connections."""
     from rich.prompt import Prompt
 
-    console.print()
-    console.print("[anton.cyan]Minds (MindsDB) configuration:[/]")
+    # 1. Always show status
+    session._handle_minds_status(console)
 
-    # Show current config
+    # 2. If no API key, prompt for one
     current_key = os.environ.get("MINDS_API_KEY", "")
-    current_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
-    current_mind = os.environ.get("MINDS_DEFAULT_MIND", "")
+    if not current_key:
+        console.print("[anton.cyan]No Minds API key configured. Let's set one up.[/]")
+        api_key = Prompt.ask("Minds API key", default="", console=console).strip()
+        if not api_key:
+            console.print("[anton.warning]No API key provided. Aborting.[/]")
+            console.print()
+            return session
 
-    if current_key:
-        masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
-        console.print(f"  API key:      [bold]{masked}[/]")
-    else:
-        console.print("  API key:      [dim]not set[/]")
-    console.print(f"  Base URL:     [bold]{current_url}[/]")
-    if current_mind:
-        console.print(f"  Default mind: [bold]{current_mind}[/]")
-    else:
-        console.print("  Default mind: [dim]not set[/]")
-    console.print()
+        base_url = Prompt.ask(
+            "Base URL",
+            default="https://mdb.ai",
+            console=console,
+        ).strip()
 
-    # API key
-    api_key = Prompt.ask(
-        "Minds API key" + (f" [dim](Enter to keep {masked})[/]" if current_key else ""),
-        default="",
-        console=console,
-    ).strip()
-
-    # Base URL
-    base_url = Prompt.ask(
-        "Base URL",
-        default=current_url,
-        console=console,
-    ).strip()
-
-    # Default mind name
-    default_mind = Prompt.ask(
-        "Default mind name [dim](optional, Enter to skip)[/]",
-        default=current_mind,
-        console=console,
-    ).strip()
-
-    # Persist
-    if api_key:
         workspace.set_secret("MINDS_API_KEY", api_key)
-    if base_url != "https://mdb.ai":
-        workspace.set_secret("MINDS_BASE_URL", base_url)
-    if default_mind:
-        workspace.set_secret("MINDS_DEFAULT_MIND", default_mind)
+        if base_url != "https://mdb.ai":
+            workspace.set_secret("MINDS_BASE_URL", base_url)
+
+        console.print("[anton.success]API key saved.[/]")
+        console.print()
+
+        session = _rebuild_session(
+            settings=settings,
+            state=state,
+            self_awareness=self_awareness,
+            workspace=workspace,
+            console=console,
+        )
+
+    # 3. Fetch available minds
+    if session._minds is None:
+        console.print("[anton.error]Minds client not available.[/]")
+        console.print()
+        return session
+
+    console.print("[anton.cyan]Fetching available minds...[/]")
+    try:
+        minds_list = await session._minds.list_minds()
+    except Exception as exc:
+        console.print(f"[anton.error]Failed to fetch minds: {exc}[/]")
+        console.print()
+        return session
+
+    if not minds_list:
+        console.print("[dim]No minds found on this account.[/]")
+        console.print()
+        return session
+
+    # 4. Interactive toggle loop
+    minds_dir = session._minds_dir
+    while True:
+        console.print()
+        console.print("[anton.cyan]Available minds:[/]")
+        for m in minds_list:
+            name = m.get("name", "unknown")
+            connected = (
+                minds_dir is not None
+                and (minds_dir / f"{name}.md").exists()
+            )
+            marker = "[bold green]connected[/]" if connected else "[dim]not connected[/]"
+            console.print(f"  [bold]{name}[/]  {marker}")
+
+        console.print()
+        choice = Prompt.ask(
+            "Type a mind name to connect/disconnect [dim](Enter to finish)[/]",
+            default="",
+            console=console,
+        ).strip()
+
+        if not choice:
+            break
+
+        # Check if choice matches a known mind
+        known_names = [m.get("name", "") for m in minds_list]
+        if choice not in known_names:
+            console.print(f"[anton.warning]Unknown mind: {choice}[/]")
+            continue
+
+        # Toggle
+        connected = (
+            minds_dir is not None
+            and (minds_dir / f"{choice}.md").exists()
+        )
+        if connected:
+            session._handle_minds_disconnect(choice, console)
+        else:
+            await session._handle_minds_connect(choice, console)
 
     console.print()
-    console.print("[anton.success]Minds configuration updated.[/]")
-    console.print()
-
-    return _rebuild_session(
-        settings=settings,
-        state=state,
-        self_awareness=self_awareness,
-        workspace=workspace,
-        console=console,
-    )
+    return session
 
 
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/setup[/]              — Configure provider, model, and API key")
-    console.print("  [bold]/minds[/]              — Show Minds status (API key, connected minds)")
-    console.print("  [bold]/minds setup[/]        — Configure Minds API key and base URL")
-    console.print("  [bold]/minds connect X[/]    — Connect a mind (fetches schema, stores knowledge)")
-    console.print("  [bold]/minds disconnect X[/] — Disconnect a mind (removes stored knowledge)")
-    console.print("  [bold]/help[/]               — Show this help message")
+    console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
+    console.print("  [bold]/minds[/]  — Manage Minds: setup, browse, connect/disconnect")
+    console.print("  [bold]/help[/]   — Show this help message")
     console.print("  [bold]exit[/]                — Quit the chat")
     console.print()
 
@@ -1294,24 +1327,10 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         self_awareness, session,
                     )
                 elif cmd == "/minds":
-                    subcmd = parts[1].lower() if len(parts) > 1 else ""
-                    if subcmd == "setup":
-                        session = await _handle_minds_setup(
-                            console, settings, workspace, state,
-                            self_awareness,
-                        )
-                    elif subcmd == "connect":
-                        if len(parts) < 3:
-                            console.print("[anton.warning]Usage: /minds connect <name>[/]")
-                        else:
-                            await session._handle_minds_connect(parts[2], console)
-                    elif subcmd == "disconnect":
-                        if len(parts) < 3:
-                            console.print("[anton.warning]Usage: /minds disconnect <name>[/]")
-                        else:
-                            session._handle_minds_disconnect(parts[2], console)
-                    else:
-                        session._handle_minds_status(console)
+                    session = await _handle_minds_command(
+                        console, settings, workspace, state,
+                        self_awareness, session,
+                    )
                 elif cmd == "/help":
                     _print_slash_help(console)
                 else:

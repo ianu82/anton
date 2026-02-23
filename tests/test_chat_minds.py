@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from anton.chat import MINDS_TOOL, ChatSession
+from anton.chat import MINDS_TOOL, ChatSession, _handle_minds_command
 from anton.llm.provider import LLMResponse, StreamComplete, StreamTaskProgress, ToolCall, Usage
 
 
@@ -746,3 +746,193 @@ class TestMindsDisconnect:
         session._handle_minds_disconnect("nonexistent", console)
         call_args = [str(c) for c in console.print.call_args_list]
         assert any("not connected" in s.lower() for s in call_args)
+
+
+class TestListMinds:
+    async def test_list_minds_gets_api_endpoint(self):
+        """list_minds() GETs /api/v1/minds and returns parsed JSON."""
+        from anton.minds import MindsClient
+
+        client = MindsClient(api_key="test-key", base_url="https://mdb.ai")
+        fake_response = [
+            {"name": "sales", "datasources": ["sales_db"]},
+            {"name": "hr", "datasources": ["hr_db"]},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = fake_response
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_resp)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        import httpx
+        with patch.object(httpx, "AsyncClient", return_value=mock_http_client):
+            result = await client.list_minds()
+
+        assert result == fake_response
+        mock_http_client.get.assert_awaited_once()
+        call_args = mock_http_client.get.call_args
+        assert call_args[0][0] == "/api/v1/minds"
+
+    async def test_list_minds_returns_empty_list(self):
+        """list_minds() returns empty list when no minds exist."""
+        from anton.minds import MindsClient
+
+        client = MindsClient(api_key="test-key")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = []
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(return_value=mock_resp)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+        import httpx
+        with patch.object(httpx, "AsyncClient", return_value=mock_http_client):
+            result = await client.list_minds()
+
+        assert result == []
+
+
+class TestUnifiedMindsCommand:
+    async def test_always_shows_status_first(self, tmp_path):
+        """The unified command always calls _handle_minds_status first."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        session = ChatSession(
+            mock_llm,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+        settings = MagicMock()
+        state = {"llm_client": mock_llm}
+
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+             patch.object(session, "_handle_minds_status") as mock_status, \
+             patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=[]), \
+             patch("rich.prompt.Prompt") as mock_prompt_cls:
+            mock_prompt_cls.ask.return_value = ""
+            await _handle_minds_command(
+                console, settings, workspace, state, None, session,
+            )
+
+        mock_status.assert_called_once_with(console)
+        await session.close()
+
+    async def test_prompts_for_api_key_when_missing(self, tmp_path):
+        """When no API key is set, prompts the user for one."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        session = ChatSession(
+            mock_llm,
+            workspace=workspace,
+        )
+        console = MagicMock()
+        settings = MagicMock()
+        state = {"llm_client": mock_llm}
+
+        # No MINDS_API_KEY, user provides nothing -> aborts
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.dict(os.environ, {"MINDS_API_KEY": ""}, clear=False), \
+             patch("rich.prompt.Prompt") as mock_prompt_cls:
+            # Remove MINDS_API_KEY from environ
+            os.environ.pop("MINDS_API_KEY", None)
+            mock_prompt_cls.ask.return_value = ""
+            result = await _handle_minds_command(
+                console, settings, workspace, state, None, session,
+            )
+
+        # Should have warned about no API key
+        printed = [str(c) for c in console.print.call_args_list]
+        assert any("no api key" in s.lower() or "aborting" in s.lower() for s in printed)
+        await session.close()
+
+    async def test_toggle_connect_disconnect(self, tmp_path):
+        """User can type a mind name to toggle connection."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Summary."))
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        # Pre-create minds dir with one connected mind
+        minds_dir = tmp_path / ".anton" / "minds"
+        minds_dir.mkdir(parents=True)
+        (minds_dir / "sales.md").write_text("Sales mind.")
+
+        session = ChatSession(
+            mock_llm,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+        settings = MagicMock()
+        state = {"llm_client": mock_llm}
+
+        minds_list = [
+            {"name": "sales", "datasources": ["sales_db"]},
+            {"name": "hr", "datasources": ["hr_db"]},
+        ]
+
+        prompt_responses = iter(["sales", ""])  # disconnect sales, then exit
+
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+             patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=minds_list), \
+             patch("rich.prompt.Prompt") as mock_prompt_cls, \
+             patch.object(session, "_handle_minds_disconnect") as mock_disconnect:
+            mock_prompt_cls.ask.side_effect = lambda *a, **kw: next(prompt_responses)
+            await _handle_minds_command(
+                console, settings, workspace, state, None, session,
+            )
+
+        # sales was connected, so it should disconnect
+        mock_disconnect.assert_called_once_with("sales", console)
+        await session.close()
+
+    async def test_toggle_connects_unconnected_mind(self, tmp_path):
+        """User typing an unconnected mind name triggers connect."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Summary."))
+        workspace = MagicMock()
+        workspace.base = tmp_path
+        workspace.build_anton_md_context.return_value = ""
+
+        (tmp_path / ".anton" / "minds").mkdir(parents=True)
+
+        session = ChatSession(
+            mock_llm,
+            workspace=workspace,
+            minds_api_key="test-key",
+        )
+        console = MagicMock()
+        settings = MagicMock()
+        state = {"llm_client": mock_llm}
+
+        minds_list = [{"name": "hr", "datasources": ["hr_db"]}]
+        prompt_responses = iter(["hr", ""])
+
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+             patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=minds_list), \
+             patch("rich.prompt.Prompt") as mock_prompt_cls, \
+             patch.object(session, "_handle_minds_connect", new_callable=AsyncMock) as mock_connect:
+            mock_prompt_cls.ask.side_effect = lambda *a, **kw: next(prompt_responses)
+            await _handle_minds_command(
+                console, settings, workspace, state, None, session,
+            )
+
+        mock_connect.assert_awaited_once_with("hr", console)
+        await session.close()

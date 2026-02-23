@@ -188,6 +188,21 @@ class MindsClient:
             resp.raise_for_status()
             return resp.text
 
+    async def list_minds(self) -> list[dict]:
+        """Fetch all minds available to the authenticated user.
+
+        GETs /api/v1/minds and returns the parsed JSON list of mind objects.
+        """
+        import httpx
+
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=60, follow_redirects=True) as client:
+            resp = await client.get(
+                "/api/v1/minds",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def get_mind(self, name: str) -> dict:
         """Fetch metadata for a single mind.
 
@@ -302,6 +317,10 @@ class SyncMindsClient:
     def export(self) -> str:
         """Export the full result set as CSV (sync)."""
         return asyncio.run(self._client.export())
+
+    def list_minds(self) -> list[dict]:
+        """Fetch all minds available to the authenticated user (sync)."""
+        return asyncio.run(self._client.list_minds())
 
     def get_mind(self, name: str) -> dict:
         """Fetch metadata for a single mind (sync)."""
