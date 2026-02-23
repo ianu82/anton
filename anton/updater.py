@@ -5,24 +5,43 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
+
+
+_TOTAL_TIMEOUT = 10  # Hard ceiling — update check never blocks startup longer than this
 
 
 def check_and_update(console, settings) -> None:
     """Check for a newer version of Anton and self-update if available.
 
-    Skips silently on any error — the update check must never crash Anton.
+    Runs in a thread with a hard timeout so it never blocks startup,
+    even if DNS resolution or network calls hang on Windows.
     """
-    try:
-        _check_and_update(console, settings)
-    except Exception:
-        return
-
-
-def _check_and_update(console, settings) -> None:
     if settings.disable_autoupdates:
         return
+
+    result: dict = {}
+
+    def _worker():
+        try:
+            _check_and_update(result, settings)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=_TOTAL_TIMEOUT)
+
+    # Print messages collected by the worker (if it finished)
+    for msg in result.get("messages", []):
+        console.print(msg)
+
+
+def _check_and_update(result: dict, settings) -> None:
+    messages: list[str] = []
+    result["messages"] = messages
 
     if shutil.which("uv") is None:
         return
@@ -76,20 +95,20 @@ def _check_and_update(console, settings) -> None:
         return
 
     # Newer version available — upgrade
-    console.print(f"  Updating anton {local_ver} \u2192 {remote_ver}...")
+    messages.append(f"  Updating anton {local_ver} \u2192 {remote_ver}...")
 
     try:
-        result = subprocess.run(
+        proc = subprocess.run(
             ["uv", "tool", "upgrade", "anton"],
             capture_output=True,
             timeout=15,
         )
     except Exception:
-        console.print("  [dim]Update failed, continuing...[/]")
+        messages.append("  [dim]Update failed, continuing...[/]")
         return
 
-    if result.returncode != 0:
-        console.print("  [dim]Update failed, continuing...[/]")
+    if proc.returncode != 0:
+        messages.append("  [dim]Update failed, continuing...[/]")
         return
 
-    console.print("  \u2713 Updated! Restart anton to use the new version.")
+    messages.append("  \u2713 Updated! Restart anton to use the new version.")

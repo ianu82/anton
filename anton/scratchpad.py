@@ -12,7 +12,7 @@ import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_CELL_TIMEOUT = 30
+_CELL_TIMEOUT = 120
 _INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
 
