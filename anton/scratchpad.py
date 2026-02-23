@@ -333,6 +333,7 @@ class Scratchpad:
     _coding_api_key: str = field(default="", repr=False)
     _venv_dir: str | None = field(default=None, repr=False)
     _venv_python: str | None = field(default=None, repr=False)
+    _installed_packages: set[str] = field(default_factory=set, repr=False)
 
     def _ensure_venv(self) -> None:
         """Create a lightweight per-scratchpad venv (idempotent).
@@ -599,9 +600,13 @@ class Scratchpad:
         """Install packages into the scratchpad's venv via pip."""
         if not packages:
             return "No packages specified."
+        # Skip packages we've already installed in this scratchpad
+        needed = [p for p in packages if p.lower() not in self._installed_packages]
+        if not needed:
+            return "All packages already installed."
         self._ensure_venv()
         proc = await asyncio.create_subprocess_exec(
-            self._venv_python, "-m", "pip", "install", "--no-input", *packages,
+            self._venv_python, "-m", "pip", "install", "--no-input", *needed,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -614,6 +619,9 @@ class Scratchpad:
         output = stdout.decode()
         if proc.returncode != 0:
             return f"Install failed (exit {proc.returncode}):\n{output}"
+        # Track successfully installed packages
+        for p in needed:
+            self._installed_packages.add(p.lower())
         return output
 
 

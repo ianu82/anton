@@ -120,10 +120,10 @@ SCRATCHPAD_TOOL = {
         "- remove: Kill the scratchpad and delete its environment\n"
         "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n"
         "- install: Install Python packages into the scratchpad's environment. "
-        "Packages persist across resets. Use this when you need a library that isn't "
-        "already available.\n\n"
+        "Packages persist across resets.\n\n"
         "Use print() to produce output. Host Python packages are available by default. "
-        "Use the install action to add more.\n"
+        "Include a 'packages' array on exec calls for any libraries your code needs — "
+        "they'll be auto-installed before the cell runs (already-installed ones are skipped).\n"
         "run_skill(name, **kwargs) is available in code to call Anton skills.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
         "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
@@ -150,7 +150,9 @@ SCRATCHPAD_TOOL = {
             "packages": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Package names to install (install only).",
+                "description": "Package names needed by this cell (exec or install). "
+                "Listed after code so you know exactly what to include. "
+                "Already-installed packages are skipped automatically.",
             },
             "one_line_description": {
                 "type": "string",
@@ -442,6 +444,14 @@ class ChatSession:
             if not code or not code.strip():
                 return "No code provided."
             pad = await self._scratchpads.get_or_create(name)
+
+            # Auto-install packages before running the cell
+            packages = tc_input.get("packages", [])
+            if packages:
+                install_result = await pad.install_packages(packages)
+                if "Install failed" in install_result or "timed out" in install_result:
+                    return install_result
+
             description = tc_input.get("one_line_description", "")
             estimated_time = tc_input.get("estimated_execution_time", "")
             cell = await pad.execute(code, description=description, estimated_time=estimated_time)
