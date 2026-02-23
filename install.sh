@@ -167,7 +167,29 @@ ensure_path() {
 
 ensure_path
 
-# ── 7. Success message ──────────────────────────────────────────────
+# ── 7. Scratchpad health check ────────────────────────────────────
+# Verify that uv can create a venv — this is what the scratchpad uses at runtime.
+# Catches broken Python symlinks, missing venv module, etc. before the user hits it.
+info ""
+info "  Running scratchpad health check..."
+HEALTH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/anton_healthcheck_XXXXXX")
+if uv venv "$HEALTH_DIR/venv" --system-site-packages --seed --quiet 2>/dev/null; then
+    HEALTH_PYTHON="$HEALTH_DIR/venv/bin/python"
+    if [ -f "$HEALTH_PYTHON" ] && "$HEALTH_PYTHON" -c "print('ok')" >/dev/null 2>&1; then
+        info "  ${GREEN}✓${RESET} Scratchpad environment OK"
+    else
+        warn "uv created a venv but the Python binary is broken."
+        info "  This usually means a Homebrew Python upgrade left stale symlinks."
+        info "  Fix with: ${BOLD}brew reinstall python${RESET}"
+    fi
+else
+    warn "uv venv creation failed. The scratchpad may not work."
+    info "  Try: ${BOLD}uv python install 3.12${RESET}"
+    info "  Or:  ${BOLD}brew reinstall python${RESET}"
+fi
+rm -rf "$HEALTH_DIR" 2>/dev/null
+
+# ── 8. Success message ──────────────────────────────────────────────
 info ""
 info "${GREEN}  ✓ anton installed successfully!${RESET}"
 info ""

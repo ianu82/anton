@@ -326,14 +326,52 @@ class Scratchpad:
             f"Try running: python3 -c 'print(\"ok\")' to verify your Python installation."
         )
 
+    @staticmethod
+    def _find_uv() -> str | None:
+        """Return the path to the ``uv`` binary, or *None* if unavailable."""
+        import subprocess as _sp
+        # Fast path: already on PATH
+        uv = shutil.which("uv")
+        if uv:
+            return uv
+        # Common install locations
+        for candidate in (
+            os.path.expanduser("~/.local/bin/uv"),
+            os.path.expanduser("~/.cargo/bin/uv"),
+        ):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
     def _create_venv(self) -> None:
-        """Allocate a venv directory and create the virtual environment."""
+        """Allocate a venv directory and create the virtual environment.
+
+        Prefers ``uv venv`` when available — it is faster, more reliable on
+        macOS (doesn't break when Homebrew upgrades Python), and doesn't depend
+        on the ``venv`` stdlib module being functional.  Falls back to
+        ``venv.create()`` when ``uv`` isn't found.
+        """
+        import subprocess as _sp
+
         if sys.platform == "win32":
             self._venv_dir = str(Path("~/.anton/scratchpad-venv").expanduser())
             os.makedirs(self._venv_dir, exist_ok=True)
         else:
             self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
-        venv.create(self._venv_dir, system_site_packages=True, with_pip=False, clear=True)
+
+        uv = self._find_uv()
+        if uv:
+            _sp.run(
+                [uv, "venv", self._venv_dir,
+                 "--python", sys.executable,
+                 "--system-site-packages", "--seed", "--quiet"],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        else:
+            venv.create(self._venv_dir, system_site_packages=True, with_pip=False, clear=True)
+
         bin_dir = os.path.join(self._venv_dir, "bin")
         if sys.platform == "win32":
             bin_dir = os.path.join(self._venv_dir, "Scripts")
@@ -627,7 +665,7 @@ class Scratchpad:
             self._venv_python = None
 
     async def install_packages(self, packages: list[str]) -> str:
-        """Install packages into the scratchpad's venv via pip."""
+        """Install packages into the scratchpad's venv via pip (or uv pip)."""
         if not packages:
             return "No packages specified."
         # Skip packages we've already installed in this scratchpad
@@ -635,8 +673,15 @@ class Scratchpad:
         if not needed:
             return "All packages already installed."
         self._ensure_venv()
+
+        uv = self._find_uv()
+        if uv:
+            cmd = [uv, "pip", "install", "--python", self._venv_python, *needed]
+        else:
+            cmd = [self._venv_python, "-m", "pip", "install", "--no-input", *needed]
+
         proc = await asyncio.create_subprocess_exec(
-            self._venv_python, "-m", "pip", "install", "--no-input", *needed,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
