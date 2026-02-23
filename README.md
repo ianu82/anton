@@ -44,7 +44,7 @@ That's the point: you describe a problem in plain language, and Anton assembles 
 
 ## How it works
 
-Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs to solve problems, operating as follows.
+Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs, operating as follows.
 
 
 **Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer. 
