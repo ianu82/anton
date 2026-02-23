@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 
 from rich.theme import Theme
@@ -50,7 +51,7 @@ def detect_color_mode() -> str:
         except (ValueError, IndexError):
             pass
 
-    if os.uname().sysname == "Darwin":
+    if sys.platform == "darwin":
         try:
             result = subprocess.run(
                 ["defaults", "read", "-g", "AppleInterfaceStyle"],
