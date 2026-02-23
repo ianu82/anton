@@ -115,7 +115,40 @@ else {
     Write-Host "  Anton may still work — uv manages the environment internally."
 }
 
-# ── 6. Ensure ~/.local/bin is in user PATH ─────────────────────────
+# ── 6. Configure firewall for scratchpad internet access ──────────
+#    Anton's scratchpad runs Python in a venv at ~/.anton/scratchpad-venv.
+#    Windows Firewall blocks new executables by default, so we add a rule.
+$scratchpadPython = Join-Path $HOME ".anton\scratchpad-venv\Scripts\python.exe"
+Write-Host ""
+Write-Host "  Anton's scratchpad needs internet access (for web scraping, APIs, etc.)."
+Write-Host "  This adds a Windows Firewall rule for the scratchpad Python executable."
+Write-Host ""
+
+if (Confirm-Step "Allow scratchpad internet access? (requires admin)") {
+    # Create the venv dir so the path exists for the rule
+    $scratchpadDir = Join-Path $HOME ".anton\scratchpad-venv"
+    if (-not (Test-Path $scratchpadDir)) {
+        New-Item -ItemType Directory -Path $scratchpadDir -Force | Out-Null
+    }
+
+    try {
+        Start-Process -FilePath "netsh" `
+            -ArgumentList "advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`"" `
+            -Verb RunAs -Wait -WindowStyle Hidden
+        Write-Host "  Firewall rule added" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  Could not add firewall rule (admin declined or unavailable)." -ForegroundColor Yellow
+        Write-Host "  You can add it manually later:"
+        Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`""
+    }
+}
+else {
+    Write-Host "  Skipped. If scratchpad internet calls time out, run this in an admin PowerShell:"
+    Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`""
+}
+
+# ── 7. Ensure ~/.local/bin is in user PATH ──────────────────────────
 $uvBinDir = Join-Path $HOME ".local\bin"
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
@@ -134,7 +167,7 @@ else {
     Write-Host "  Added $uvBinDir to user PATH"
 }
 
-# ── 7. Success message ──────────────────────────────────────────────
+# ── 8. Success message ──────────────────────────────────────────────
 Write-Host ""
 Write-Host "  ✓ anton installed successfully!" -ForegroundColor Green
 Write-Host ""
