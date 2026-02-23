@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -94,13 +92,4 @@ def _check_and_update(console, settings) -> None:
         console.print("  [dim]Update failed, continuing...[/]")
         return
 
-    console.print("  \u2713 Updated!")
-
-    # Re-exec so the user gets the new version immediately
-    if sys.platform == "win32":
-        # Use os.execvp with the full executable path on Windows too;
-        # Popen + sys.exit can detach from the console and cause timeouts.
-        argv0 = shutil.which(sys.argv[0]) or sys.argv[0]
-        os.execv(argv0, sys.argv)
-    else:
-        os.execvp(sys.argv[0], sys.argv)
+    console.print("  \u2713 Updated! Restart anton to use the new version.")
