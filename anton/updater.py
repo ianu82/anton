@@ -38,6 +38,11 @@ def check_and_update(console, settings) -> None:
     for msg in result.get("messages", []):
         console.print(msg)
 
+    # Update in-memory version so the banner shows the new version
+    if "new_version" in result:
+        import anton
+        anton.__version__ = result["new_version"]
+
 
 def _check_and_update(result: dict, settings) -> None:
     messages: list[str] = []
@@ -111,4 +116,5 @@ def _check_and_update(result: dict, settings) -> None:
         messages.append("  [dim]Update failed, continuing...[/]")
         return
 
-    messages.append("  \u2713 Updated! Restart anton to use the new version.")
+    messages.append("  \u2713 Updated!")
+    result["new_version"] = remote_version_str
