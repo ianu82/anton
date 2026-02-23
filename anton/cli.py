@@ -78,6 +78,9 @@ def main(
     settings = AntonSettings()
     settings.resolve_workspace(folder)
 
+    from anton.updater import check_and_update
+    check_and_update(console, settings)
+
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
 

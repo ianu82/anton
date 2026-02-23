@@ -42,6 +42,8 @@ class AntonSettings(BaseSettings):
 
     theme: str = "auto"
 
+    disable_autoupdates: bool = False
+
     _workspace: Path = PrivateAttr(default=None)
 
     @property
