@@ -814,7 +814,11 @@ class ChatSession:
                     result_text = await self._handle_scratchpad(tc.input)
                     if tc.input.get("action") == "dump":
                         yield StreamToolResult(content=result_text)
-                        result_text = "Notebook dump displayed to user."
+                        result_text = (
+                            "The full notebook has been displayed to the user above. "
+                            "Do not repeat it. Here is the content for your reference:\n\n"
+                            + result_text
+                        )
                 elif tc.name == "minds":
                     result_text = await self._handle_minds(tc.input)
                 else:
