@@ -872,7 +872,28 @@ class ChatSession:
                                 + result_text
                             )
                     elif tc.name == "minds":
-                        result_text = await self._handle_minds(tc.input)
+                        if tc.input.get("action") == "ask" and self._minds is not None:
+                            question = tc.input.get("question", "")
+                            mind = tc.input.get("mind", "") or os.environ.get("MINDS_DEFAULT_MIND", "")
+                            if not question:
+                                result_text = "A 'question' is required for the ask action."
+                            elif not mind:
+                                result_text = (
+                                    "A 'mind' name is required. Specify it in the tool call "
+                                    "or set a default via /minds."
+                                )
+                            else:
+                                accumulated: list[str] = []
+                                try:
+                                    async for delta in self._minds.ask_stream(question, mind):
+                                        accumulated.append(delta)
+                                        snippet = "".join(accumulated)[-60:]
+                                        yield StreamTaskProgress(phase="minds", message=snippet)
+                                    result_text = "".join(accumulated) or "No answer returned."
+                                except Exception as exc:
+                                    result_text = f"Minds error: {exc}"
+                        else:
+                            result_text = await self._handle_minds(tc.input)
                     else:
                         result_text = f"Unknown tool: {tc.name}"
                 except Exception as exc:

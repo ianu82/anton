@@ -195,6 +195,16 @@ class StreamDisplay:
         """Update the Live display with agent progress (phase + message + optional ETA)."""
         if self._live is None:
             return
+
+        # For minds streaming, show progress on the activity line itself
+        if phase == "minds" and self._activities:
+            for act in reversed(self._activities):
+                if act.name == "minds":
+                    act.current_progress = message
+                    break
+            self._refresh_live()
+            return
+
         label = PHASE_LABELS.get(phase, phase)
         eta_str = f"  ~{int(eta)}s" if eta else ""
         status = f"{label}  {message}{eta_str}"
@@ -248,6 +258,8 @@ class StreamDisplay:
             else:
                 lines.append("  ")
             lines.append(label, style="bold")
+            if act.current_progress:
+                lines.append(f" \u2190 {act.current_progress}", style="anton.muted")
             lines.append("\n")
         return lines
 

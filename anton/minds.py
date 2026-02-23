@@ -7,6 +7,8 @@ Data stays in MindsDB — only results come back.
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 
@@ -72,6 +74,60 @@ class MindsClient:
                     if content.get("type") == "output_text":
                         output_parts.append(content.get("text", ""))
         return "\n".join(output_parts) if output_parts else data.get("output_text", "")
+
+    async def ask_stream(
+        self,
+        question: str,
+        mind: str,
+        conversation_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Streaming version of ask(). Yields text deltas as they arrive.
+
+        POSTs to /api/v1/responses with ``"stream": true`` and parses the
+        SSE event stream.  On ``response.output_text.delta`` events the
+        delta text is yielded.  On ``response.completed`` the conversation
+        and message IDs are stored so that subsequent data()/export() calls
+        work exactly like after a non-streaming ask().
+        """
+        import httpx
+
+        payload: dict = {
+            "input": question,
+            "model": mind,
+            "stream": True,
+        }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url, timeout=120, follow_redirects=True,
+        ) as client:
+            async with client.stream(
+                "POST",
+                "/api/v1/responses",
+                headers=self._headers(),
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:"):].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    etype = event.get("type", "")
+                    if etype == "response.output_text.delta":
+                        delta = event.get("delta", "")
+                        if delta:
+                            yield delta
+                    elif etype == "response.completed":
+                        resp_obj = event.get("response", {})
+                        self._last_conversation_id = resp_obj.get("conversation_id")
+                        self._last_message_id = resp_obj.get("id")
 
     async def data(self, limit: int = 100, offset: int = 0) -> str:
         """Fetch raw tabular results from the last ask() call.

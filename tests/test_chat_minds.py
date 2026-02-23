@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from anton.chat import MINDS_TOOL, ChatSession
-from anton.llm.provider import LLMResponse, StreamComplete, ToolCall, Usage
+from anton.llm.provider import LLMResponse, StreamComplete, StreamTaskProgress, ToolCall, Usage
 
 
 def _text_response(text: str) -> LLMResponse:
@@ -424,14 +424,21 @@ class TestMindsStreaming:
             mock_llm, minds_api_key="test-key"
         )
         try:
+            async def _fake_ask_stream(question, mind, conversation_id=None):
+                for chunk in ["Acme ", "Corp ", "is #1."]:
+                    yield chunk
+
             with patch.object(
-                session._minds, "ask", new_callable=AsyncMock, return_value="Acme Corp is #1."
+                session._minds, "ask_stream", _fake_ask_stream,
             ):
                 events = []
                 async for event in session.turn_stream("who are top customers?"):
                     events.append(event)
 
             assert any(isinstance(e, StreamComplete) for e in events)
+            progress_events = [e for e in events if isinstance(e, StreamTaskProgress)]
+            assert len(progress_events) >= 1
+            assert progress_events[-1].phase == "minds"
 
             tool_result_msgs = [
                 m for m in session.history
