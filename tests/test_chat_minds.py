@@ -61,10 +61,8 @@ class TestMindsToolInBuildTools:
         """minds tool should appear in _build_tools() when api key is set."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             await session.turn("hello")
@@ -79,9 +77,7 @@ class TestMindsToolInBuildTools:
         """minds tool should NOT appear when no api key is set."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
-
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("hello")
             call_kwargs = mock_llm.plan.call_args
@@ -95,11 +91,9 @@ class TestMindsToolInBuildTools:
         """minds tool description should mention default mind when set."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
-
         with patch.dict(os.environ, {"MINDS_DEFAULT_MIND": "my_sales_mind"}):
             session = ChatSession(
-                mock_llm, mock_run, minds_api_key="test-key"
+                mock_llm, minds_api_key="test-key"
             )
             try:
                 await session.turn("hello")
@@ -127,10 +121,8 @@ class TestMindsAskDispatch:
                 _text_response("The top customer is Acme."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             with patch.object(
@@ -160,10 +152,8 @@ class TestMindsAskDispatch:
                 _text_response("I need a question."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             await session.turn("query minds")
@@ -186,11 +176,9 @@ class TestMindsAskDispatch:
                 _text_response("Here's the revenue."),
             ]
         )
-        mock_run = AsyncMock()
-
         with patch.dict(os.environ, {"MINDS_DEFAULT_MIND": "default_mind"}):
             session = ChatSession(
-                mock_llm, mock_run, minds_api_key="test-key"
+                mock_llm, minds_api_key="test-key"
             )
             try:
                 with patch.object(
@@ -213,10 +201,8 @@ class TestMindsDataDispatch:
                 _text_response("Here's the table."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             table_md = "| name | revenue |\n| --- | --- |\n| Acme | 1M |"
@@ -245,10 +231,8 @@ class TestMindsDataDispatch:
                 _text_response("Need to ask first."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             # _minds.data() will raise ValueError since no prior ask
@@ -274,10 +258,8 @@ class TestMindsExportDispatch:
                 _text_response("Here's the CSV data."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             csv_text = "name,revenue\nAcme,1000000\nGlobex,750000\n"
@@ -307,10 +289,8 @@ class TestMindsExportDispatch:
                 _text_response("Need to ask first."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             # _minds.export() will raise ValueError since no prior ask
@@ -336,10 +316,8 @@ class TestMindsCatalogDispatch:
                 _text_response("Here are the tables."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             catalog_text = "## customers\n  - id (integer)\n  - name (varchar)"
@@ -361,10 +339,8 @@ class TestMindsCatalogDispatch:
                 _text_response("I need a datasource name."),
             ]
         )
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             await session.turn("show catalog")
@@ -390,10 +366,9 @@ class TestMindsNotConfigured:
                 _text_response("Minds is not set up."),
             ]
         )
-        mock_run = AsyncMock()
 
         # No minds_api_key — _minds is None
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("query data")
 
@@ -445,10 +420,8 @@ class TestMindsStreaming:
             ])
 
         mock_llm.plan_stream = fake_plan_stream
-        mock_run = AsyncMock()
-
         session = ChatSession(
-            mock_llm, mock_run, minds_api_key="test-key"
+            mock_llm, minds_api_key="test-key"
         )
         try:
             with patch.object(
@@ -476,8 +449,6 @@ class TestMindsKnowledgeInjection:
         """When .anton/minds/X.md exists, its content is injected into the system prompt."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
@@ -487,7 +458,7 @@ class TestMindsKnowledgeInjection:
         (minds_dir / "sales.md").write_text("This mind has sales data with customers and orders.")
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -505,9 +476,8 @@ class TestMindsKnowledgeInjection:
         """When there's no .anton/minds directory, no mind sections are injected."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, minds_api_key="test-key")
+        session = ChatSession(mock_llm, minds_api_key="test-key")
         try:
             await session.turn("hello")
             call_kwargs = mock_llm.plan.call_args
@@ -521,8 +491,6 @@ class TestMindsKnowledgeInjection:
         """When .anton/minds exists but is empty, nothing is injected."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
@@ -530,7 +498,7 @@ class TestMindsKnowledgeInjection:
         (tmp_path / ".anton" / "minds").mkdir(parents=True)
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -548,14 +516,12 @@ class TestMindsConnect:
         """connect fetches mind info, catalogs datasources, gets LLM summary, writes file."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("This mind provides sales analytics."))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -581,14 +547,12 @@ class TestMindsConnect:
         """When LLM fails, raw catalog is stored as fallback."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(side_effect=Exception("LLM unavailable"))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -614,14 +578,12 @@ class TestMindsConnect:
         """When catalog 404s but get_mind has tables, use those."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("This mind has order and car data."))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -665,14 +627,12 @@ class TestMindsConnect:
         """When catalog 404s AND get_mind has no tables, ask the mind directly."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("This mind has order tracking data."))
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
         workspace.build_anton_md_context.return_value = ""
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -707,13 +667,11 @@ class TestMindsConnect:
     async def test_connect_rejects_invalid_name(self, tmp_path):
         """Invalid mind names are rejected."""
         mock_llm = AsyncMock()
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -728,12 +686,10 @@ class TestMindsConnect:
     async def test_connect_without_minds_configured(self, tmp_path):
         """Connect fails gracefully when minds not configured."""
         mock_llm = AsyncMock()
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
 
-        session = ChatSession(mock_llm, mock_run, workspace=workspace)
+        session = ChatSession(mock_llm, workspace=workspace)
         console = MagicMock()
 
         await session._handle_minds_connect("sales", console)
@@ -747,8 +703,6 @@ class TestMindsDisconnect:
     def test_disconnect_removes_file(self, tmp_path):
         """Disconnect removes the mind's knowledge file."""
         mock_llm = AsyncMock()
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
 
@@ -758,7 +712,7 @@ class TestMindsDisconnect:
         md_file.write_text("Sales mind knowledge.")
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )
@@ -770,15 +724,13 @@ class TestMindsDisconnect:
     def test_disconnect_warns_when_not_connected(self, tmp_path):
         """Disconnect warns when the mind isn't connected."""
         mock_llm = AsyncMock()
-        mock_run = AsyncMock()
-
         workspace = MagicMock()
         workspace.base = tmp_path
 
         (tmp_path / ".anton" / "minds").mkdir(parents=True)
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             workspace=workspace,
             minds_api_key="test-key",
         )

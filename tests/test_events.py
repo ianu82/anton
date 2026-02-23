@@ -15,13 +15,12 @@ from anton.events.types import (
 class TestPhaseEnum:
     def test_all_phases_exist(self):
         assert Phase.PLANNING == "planning"
-        assert Phase.SKILL_DISCOVERY == "skill_discovery"
         assert Phase.EXECUTING == "executing"
         assert Phase.COMPLETE == "complete"
         assert Phase.FAILED == "failed"
 
     def test_phase_count(self):
-        assert len(Phase) == 7
+        assert len(Phase) == 5
 
 
 class TestEventModels:

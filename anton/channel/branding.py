@@ -176,16 +176,6 @@ def render_dashboard(console: Console) -> None:
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
-    # Count skills
-    from anton.skill.registry import SkillRegistry
-
-    registry = SkillRegistry()
-    builtin = Path(__file__).resolve().parent.parent.parent / settings.skills_dir
-    registry.discover(builtin)
-    user_dir = Path(settings.user_skills_dir).expanduser()
-    registry.discover(user_dir)
-    skill_count = len(registry.list_all())
-
     # Count sessions
     session_count = 0
     if settings.memory_enabled:
@@ -203,8 +193,6 @@ def render_dashboard(console: Console) -> None:
     mode = detect_color_mode()
 
     commands_content = (
-        "[anton.cyan]run[/] <task>    Execute a task\n"
-        "[anton.cyan]skills[/]        List skills\n"
         "[anton.cyan]sessions[/]      Browse sessions\n"
         "[anton.cyan]learnings[/]     Review learnings\n"
         "[anton.cyan]channels[/]      List channels\n"
@@ -217,7 +205,6 @@ def render_dashboard(console: Console) -> None:
         model_label = model_label[:16] + "\u2026"
 
     status_content = (
-        f"[anton.cyan]Skills[/]    {skill_count} loaded\n"
         f"[anton.cyan]Memory[/]    {memory_label}\n"
         f"[anton.cyan]Sessions[/]  {session_count} stored\n"
         f"[anton.cyan]Channel[/]   cli\n"
@@ -241,6 +228,6 @@ def render_dashboard(console: Console) -> None:
     console.print(Columns([commands_panel, status_panel], padding=(0, 1)))
     console.print()
     console.print(
-        ' [anton.muted]Quick start:[/] [anton.cyan]anton run "fix the failing tests"[/]'
+        ' [anton.muted]Quick start:[/] [anton.cyan]anton[/] [anton.muted](starts interactive chat)[/]'
     )
     console.print()

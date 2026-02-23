@@ -33,9 +33,6 @@ class AntonSettings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str | None = None
 
-    skills_dir: str = "skills"
-    user_skills_dir: str = ".anton/skills"
-
     memory_enabled: bool = True
     memory_dir: str = ".anton"
 
@@ -66,8 +63,6 @@ class AntonSettings(BaseSettings):
         # Convert relative paths to absolute under base
         if not Path(self.memory_dir).is_absolute():
             self.memory_dir = str(base / self.memory_dir)
-        if not Path(self.user_skills_dir).is_absolute():
-            self.user_skills_dir = str(base / self.user_skills_dir)
         if not Path(self.context_dir).is_absolute():
             self.context_dir = str(base / self.context_dir)
 

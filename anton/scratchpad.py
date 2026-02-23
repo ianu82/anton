@@ -191,49 +191,6 @@ if _scratchpad_model:
     except Exception:
         pass  # LLM not available — not fatal (e.g. anthropic not installed)
 
-# --- Inject run_skill() if skill dirs are available ---
-_skill_dirs_raw = os.environ.get("ANTON_SKILL_DIRS", "")
-if _skill_dirs_raw:
-    try:
-        import importlib.util
-        _skill_dirs = [d for d in _skill_dirs_raw.split(os.pathsep) if d]
-        _registry = {}
-
-        for skills_dir in _skill_dirs:
-            from pathlib import Path as _Path
-            skills_path = _Path(skills_dir)
-            if not skills_path.is_dir():
-                continue
-            for skill_file in sorted(skills_path.glob("*/skill.py")):
-                module_name = f"anton_skill_{skill_file.parent.name}"
-                spec = importlib.util.spec_from_file_location(module_name, skill_file)
-                if spec is None or spec.loader is None:
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                try:
-                    spec.loader.exec_module(module)
-                except Exception:
-                    continue
-                for attr_name in dir(module):
-                    obj = getattr(module, attr_name)
-                    info = getattr(obj, "_skill_info", None)
-                    if info is not None and hasattr(info, "name"):
-                        _registry[info.name] = info
-
-        def run_skill(name, **kwargs):
-            """Run an Anton skill by name. Returns the skill's output."""
-            import asyncio as _asyncio
-            _skill = _registry.get(name)
-            if _skill is None:
-                raise ValueError(f"Unknown skill: {name}. Available: {list(_registry.keys())}")
-            result = _asyncio.run(_skill.execute(**kwargs))
-            return result.output
-
-        namespace["run_skill"] = run_skill
-    except Exception:
-        pass  # Skills not available — not fatal
-
 # --- Inject get_minds() for Minds/MindsDB access from scratchpad code ---
 _minds_api_key = os.environ.get("MINDS_API_KEY", "")
 if _minds_api_key:
@@ -327,7 +284,6 @@ class Scratchpad:
     cells: list[Cell] = field(default_factory=list)
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _boot_path: str | None = field(default=None, repr=False)
-    _skill_dirs: list[Path] = field(default_factory=list, repr=False)
     _coding_provider: str = field(default="anthropic", repr=False)
     _coding_model: str = field(default="", repr=False)
     _coding_api_key: str = field(default="", repr=False)
@@ -438,8 +394,6 @@ class Scratchpad:
         self._boot_path = path
 
         env = os.environ.copy()
-        if self._skill_dirs:
-            env["ANTON_SKILL_DIRS"] = os.pathsep.join(str(d) for d in self._skill_dirs)
         if self._coding_model:
             env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
         if self._coding_provider:
@@ -706,13 +660,11 @@ class ScratchpadManager:
 
     def __init__(
         self,
-        skill_dirs: list[Path] | None = None,
         coding_provider: str = "anthropic",
         coding_model: str = "",
         coding_api_key: str = "",
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
-        self._skill_dirs: list[Path] = skill_dirs or []
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
@@ -730,7 +682,6 @@ class ScratchpadManager:
         if name not in self._pads:
             pad = Scratchpad(
                 name=name,
-                _skill_dirs=self._skill_dirs,
                 _coding_provider=self._coding_provider,
                 _coding_model=self._coding_model,
                 _coding_api_key=self._coding_api_key,

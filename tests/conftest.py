@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from anton.channel.base import Channel
 from anton.llm.provider import LLMResponse, ToolCall, Usage
-from anton.skill.registry import SkillRegistry
-
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
 @pytest.fixture()
@@ -38,10 +34,3 @@ def make_llm_response():
         )
 
     return _factory
-
-
-@pytest.fixture()
-def skill_registry() -> SkillRegistry:
-    reg = SkillRegistry()
-    reg.discover(str(SKILLS_DIR))
-    return reg

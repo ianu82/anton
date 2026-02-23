@@ -59,9 +59,8 @@ class TestScratchpadToolDefinition:
         """scratchpad should always be in _build_tools() output."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("hello")
 
@@ -83,9 +82,8 @@ class TestScratchpadExecViaChat:
                 _text_response("The answer is 42."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             reply = await session.turn("what is 7 * 6?")
 
@@ -111,9 +109,8 @@ class TestScratchpadViewViaChat:
                 _text_response("Here's the history."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("run and show")
 
@@ -141,9 +138,8 @@ class TestScratchpadRemoveViaChat:
                 _text_response("Cleaned up."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("create and remove")
 
@@ -171,9 +167,8 @@ class TestScratchpadDumpViaChat:
                 _text_response("Done!"),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("show me my work")
 
@@ -233,9 +228,8 @@ class TestScratchpadDumpStreaming:
             ])
 
         mock_llm.plan_stream = fake_plan_stream
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             events = []
             async for event in session.turn_stream("show work"):
@@ -276,9 +270,8 @@ class TestScratchpadStreaming:
             return _FakeAsyncIter([StreamComplete(response=final_response)])
 
         mock_llm.plan_stream = fake_plan_stream
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             events = []
             async for event in session.turn_stream("compute 99"):
@@ -309,9 +302,8 @@ class TestScratchpadInstallViaChat:
                 _text_response("Installed cowsay."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             reply = await session.turn("install cowsay")
 
@@ -334,9 +326,8 @@ class TestScratchpadInstallViaChat:
                 _text_response("Nothing to install."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run)
+        session = ChatSession(mock_llm)
         try:
             await session.turn("install nothing")
 

@@ -91,9 +91,8 @@ class TestUpdateContextTool:
                 _text_response("Got it, I've noted that for future reference."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, self_awareness=sa)
+        session = ChatSession(mock_llm, self_awareness=sa)
         reply = await session.turn("this project uses pytest and black")
 
         assert "noted" in reply.lower() or "reference" in reply.lower()
@@ -113,9 +112,8 @@ class TestUpdateContextTool:
                 _text_response("Done, removed the outdated info."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, self_awareness=sa)
+        session = ChatSession(mock_llm, self_awareness=sa)
         await session.turn("forget about the outdated conventions")
 
         assert not (ctx_dir / "outdated.md").exists()
@@ -126,9 +124,8 @@ class TestUpdateContextTool:
 
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, self_awareness=sa)
+        session = ChatSession(mock_llm, self_awareness=sa)
         await session.turn("hi")
 
         # Check that the system prompt passed to plan() includes context
@@ -141,16 +138,15 @@ class TestUpdateContextTool:
         """Without self_awareness, update_context tool is not offered."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, self_awareness=None)
+        session = ChatSession(mock_llm, self_awareness=None)
         await session.turn("hello")
 
         call_kwargs = mock_llm.plan.call_args
         tools = call_kwargs.kwargs.get("tools", [])
         tool_names = [t["name"] for t in tools]
         assert "update_context" not in tool_names
-        assert "execute_task" in tool_names
+        assert "scratchpad" in tool_names
 
     async def test_tool_result_in_history(self, sa, ctx_dir):
         """update_context tool result appears in conversation history."""
@@ -164,9 +160,8 @@ class TestUpdateContextTool:
                 _text_response("Done."),
             ]
         )
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, self_awareness=sa)
+        session = ChatSession(mock_llm, self_awareness=sa)
         await session.turn("note this")
 
         # Find the tool result in history
@@ -199,14 +194,13 @@ class TestRequestSecretTool:
                 _text_response("Great, GITHUB_TOKEN is configured."),
             ]
         )
-        mock_run = AsyncMock()
 
         # Mock console.input to simulate user entering a secret
         mock_console = MagicMock()
         mock_console.input = MagicMock(return_value="ghp_testtoken123")
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             self_awareness=sa,
             workspace=ws,
             console=mock_console,
@@ -233,11 +227,10 @@ class TestRequestSecretTool:
                 _text_response("It's already configured."),
             ]
         )
-        mock_run = AsyncMock()
         mock_console = MagicMock()
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             self_awareness=sa,
             workspace=ws,
             console=mock_console,
@@ -251,9 +244,8 @@ class TestRequestSecretTool:
         """request_secret tool is offered when workspace is provided."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, workspace=ws)
+        session = ChatSession(mock_llm, workspace=ws)
         await session.turn("hello")
 
         call_kwargs = mock_llm.plan.call_args
@@ -265,9 +257,8 @@ class TestRequestSecretTool:
         """request_secret tool is NOT offered when no workspace."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, workspace=None)
+        session = ChatSession(mock_llm, workspace=None)
         await session.turn("hello")
 
         call_kwargs = mock_llm.plan.call_args
@@ -283,10 +274,9 @@ class TestAntonMdInjection:
 
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             self_awareness=sa,
             workspace=ws,
         )
@@ -303,10 +293,9 @@ class TestAntonMdInjection:
 
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             self_awareness=sa,
             workspace=ws,
         )
@@ -322,10 +311,9 @@ class TestRuntimeContext:
         """Runtime context (provider/model) appears in the system prompt."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             runtime_context="- Provider: anthropic\n- Planning model: claude-sonnet-4-6\n- Coding model: claude-opus-4-6",
         )
         await session.turn("hi")
@@ -340,10 +328,9 @@ class TestRuntimeContext:
         """System prompt includes instruction to never ask which LLM to use."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
         session = ChatSession(
-            mock_llm, mock_run,
+            mock_llm,
             runtime_context="- Provider: anthropic",
         )
         await session.turn("hi")
@@ -356,23 +343,20 @@ class TestRuntimeContext:
         """System prompt includes conversation discipline rules."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, runtime_context="")
+        session = ChatSession(mock_llm, runtime_context="")
         await session.turn("hi")
 
         call_kwargs = mock_llm.plan.call_args
         system_prompt = call_kwargs.kwargs.get("system", "")
         assert "WAIT for their reply" in system_prompt
-        assert "Never ask a question and call execute_task in the same turn" in system_prompt
 
     async def test_secret_handling_in_prompt(self):
         """System prompt includes secret handling rules."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
-        mock_run = AsyncMock()
 
-        session = ChatSession(mock_llm, mock_run, runtime_context="")
+        session = ChatSession(mock_llm, runtime_context="")
         await session.turn("hi")
 
         call_kwargs = mock_llm.plan.call_args

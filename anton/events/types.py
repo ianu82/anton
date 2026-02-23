@@ -9,8 +9,6 @@ from pydantic import BaseModel
 class Phase(str, Enum):
     MEMORY_RECALL = "memory_recall"
     PLANNING = "planning"
-    SKILL_DISCOVERY = "skill_discovery"
-    SKILL_BUILDING = "skill_building"
     EXECUTING = "executing"
     COMPLETE = "complete"
     FAILED = "failed"

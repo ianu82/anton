@@ -26,7 +26,6 @@ class _ToolActivity:
 
 
 _TOOL_LABELS: dict[str, str] = {
-    "execute_task": "Task",
     "scratchpad": "Scratchpad",
     "minds": "Minds",
     "update_context": "Context",
@@ -45,9 +44,7 @@ def _tool_display_text(name: str, input_json: str) -> str:
         return label
 
     desc = ""
-    if name == "execute_task":
-        desc = data.get("task", "")
-    elif name == "scratchpad":
+    if name == "scratchpad":
         desc = data.get("one_line_description") or data.get("action", "")
     elif name == "minds":
         action = data.get("action", "")
@@ -100,8 +97,6 @@ TOOL_MESSAGES = [
 PHASE_LABELS = {
     "memory_recall": "Memory",
     "planning": "Planning",
-    "skill_discovery": "Skills",
-    "skill_building": "Building",
     "executing": "Executing",
     "complete": "Complete",
     "failed": "Failed",
@@ -204,14 +199,6 @@ class StreamDisplay:
         eta_str = f"  ~{int(eta)}s" if eta else ""
         status = f"{label}  {message}{eta_str}"
         self._set_status(status)
-
-        # Associate progress with the last execute_task activity
-        for act in reversed(self._activities):
-            if act.name == "execute_task":
-                act.current_progress = f"{label}  {message}{eta_str}"
-                act.step_count += 1
-                break
-
         self._refresh_live()
 
     def finish(self) -> None:
@@ -262,12 +249,6 @@ class StreamDisplay:
                 lines.append("  ")
             lines.append(label, style="bold")
             lines.append("\n")
-            # Sub-progress for execute_task
-            if act.name == "execute_task":
-                if final and act.step_count > 0:
-                    lines.append(f"  \u23bf Done ({act.step_count} step{'s' if act.step_count != 1 else ''})\n", style="anton.muted")
-                elif not final and act.current_progress:
-                    lines.append(f"  \u23bf {act.current_progress}\n", style="anton.muted")
         return lines
 
     def _refresh_live(self) -> None:

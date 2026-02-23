@@ -25,14 +25,6 @@ class TestAntonSettingsDefaults:
         s = AntonSettings(anthropic_api_key="test")
         assert s.coding_model == "claude-haiku-4-5-20251001"
 
-    def test_default_skills_dir(self):
-        s = AntonSettings(anthropic_api_key="test")
-        assert s.skills_dir == "skills"
-
-    def test_default_user_skills_dir(self):
-        s = AntonSettings(anthropic_api_key="test")
-        assert s.user_skills_dir == ".anton/skills"
-
     def test_default_memory_dir(self):
         s = AntonSettings(anthropic_api_key="test")
         assert s.memory_dir == ".anton"
@@ -57,12 +49,6 @@ class TestAntonSettingsEnvOverride:
         s = AntonSettings(_env_file=None)
         assert s.anthropic_api_key == "sk-test-key"
 
-    def test_env_overrides_skills_dir(self, monkeypatch):
-        monkeypatch.setenv("ANTON_SKILLS_DIR", "/custom/skills")
-        s = AntonSettings(_env_file=None)
-        assert s.skills_dir == "/custom/skills"
-
-
 class TestWorkspaceResolution:
     def test_resolve_workspace_defaults_to_cwd(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -71,7 +57,6 @@ class TestWorkspaceResolution:
 
         assert s.workspace_path == tmp_path
         assert Path(s.memory_dir) == tmp_path / ".anton"
-        assert Path(s.user_skills_dir) == tmp_path / ".anton" / "skills"
         assert Path(s.context_dir) == tmp_path / ".anton" / "context"
         assert (tmp_path / ".anton").is_dir()
 
@@ -81,7 +66,6 @@ class TestWorkspaceResolution:
 
         assert s.workspace_path == tmp_path
         assert Path(s.memory_dir) == tmp_path / ".anton"
-        assert Path(s.user_skills_dir) == tmp_path / ".anton" / "skills"
         assert Path(s.context_dir) == tmp_path / ".anton" / "context"
         assert (tmp_path / ".anton").is_dir()
 

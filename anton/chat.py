@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING
 
 import anthropic
 
-from anton.channel.base import Channel
-from anton.events.types import AntonEvent, StatusUpdate, TaskComplete, TaskFailed
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     StreamComplete,
@@ -32,24 +30,6 @@ if TYPE_CHECKING:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.workspace import Workspace
-
-EXECUTE_TASK_TOOL = {
-    "name": "execute_task",
-    "description": (
-        "Execute a coding task autonomously through Anton's agent pipeline. "
-        "Call this when you have enough context to act on the user's request."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "A clear, specific description of the task to execute.",
-            },
-        },
-        "required": ["task"],
-    },
-}
 
 UPDATE_CONTEXT_TOOL = {
     "name": "update_context",
@@ -124,7 +104,6 @@ SCRATCHPAD_TOOL = {
         "Use print() to produce output. Host Python packages are available by default. "
         "Include a 'packages' array on exec calls for any libraries your code needs — "
         "they'll be auto-installed before the cell runs (already-installed ones are skipped).\n"
-        "run_skill(name, **kwargs) is available in code to call Anton skills.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
         "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
         "llm.generate_object(MyModel, system=..., messages=[...]) extracts structured "
@@ -241,22 +220,6 @@ Schema catalog:
 """
 
 
-class _ProgressChannel(Channel):
-    """Channel that captures agent events into an asyncio.Queue instead of rendering."""
-
-    def __init__(self) -> None:
-        self.queue: asyncio.Queue[AntonEvent | None] = asyncio.Queue()
-
-    async def emit(self, event: AntonEvent) -> None:
-        await self.queue.put(event)
-
-    async def prompt(self, question: str) -> str:
-        return ""
-
-    async def close(self) -> None:
-        await self.queue.put(None)
-
-
 _MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
 _MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
 
@@ -267,29 +230,23 @@ class ChatSession:
     def __init__(
         self,
         llm_client: LLMClient,
-        run_task,
         *,
-        run_task_stream=None,
         self_awareness: SelfAwarenessContext | None = None,
         runtime_context: str = "",
         workspace: Workspace | None = None,
         console: Console | None = None,
-        skill_dirs: list[Path] | None = None,
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
         minds_api_key: str = "",
         minds_base_url: str = "https://mdb.ai",
     ) -> None:
         self._llm = llm_client
-        self._run_task = run_task
-        self._run_task_stream = run_task_stream
         self._self_awareness = self_awareness
         self._runtime_context = runtime_context
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = []
         self._scratchpads = ScratchpadManager(
-            skill_dirs=skill_dirs,
             coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
@@ -374,7 +331,7 @@ class ChatSession:
                 extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
             scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
 
-        tools = [EXECUTE_TASK_TOOL, scratchpad_tool]
+        tools = [scratchpad_tool]
         if self._self_awareness is not None:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:
@@ -766,10 +723,7 @@ class ChatSession:
             tool_results: list[dict] = []
             for tc in response.tool_calls:
                 try:
-                    if tc.name == "execute_task":
-                        task_desc = tc.input.get("task", "")
-                        result_text = await self._run_task(task_desc)
-                    elif tc.name == "update_context":
+                    if tc.name == "update_context":
                         result_text = self._handle_update_context(tc.input)
                     elif tc.name == "request_secret":
                         result_text = self._handle_request_secret(tc.input)
@@ -888,18 +842,7 @@ class ChatSession:
             tool_results: list[dict] = []
             for tc in llm_response.tool_calls:
                 try:
-                    if tc.name == "execute_task":
-                        task_desc = tc.input.get("task", "")
-                        if self._run_task_stream is not None:
-                            last_summary = ""
-                            async for progress in self._run_task_stream(task_desc):
-                                yield progress
-                                if progress.phase in ("complete", "failed"):
-                                    last_summary = progress.message
-                            result_text = last_summary or f"Task completed: {task_desc}"
-                        else:
-                            result_text = await self._run_task(task_desc)
-                    elif tc.name == "update_context":
+                    if tc.name == "update_context":
                         result_text = self._handle_update_context(tc.input)
                     elif tc.name == "request_secret":
                         result_text = self._handle_request_secret(tc.input)
@@ -972,9 +915,6 @@ def _rebuild_session(
     self_awareness,
     workspace,
     console: Console,
-    skill_dirs: list[Path],
-    do_run_task,
-    do_run_task_stream,
 ) -> ChatSession:
     """Rebuild LLMClient + ChatSession after settings change."""
     from anton.llm.client import LLMClient
@@ -992,13 +932,10 @@ def _rebuild_session(
     ) or ""
     return ChatSession(
         state["llm_client"],
-        do_run_task,
-        run_task_stream=do_run_task_stream,
         self_awareness=self_awareness,
         runtime_context=runtime_context,
         workspace=workspace,
         console=console,
-        skill_dirs=skill_dirs,
         coding_provider=settings.coding_provider,
         coding_api_key=api_key,
         minds_api_key=os.environ.get("MINDS_API_KEY", ""),
@@ -1012,9 +949,6 @@ async def _handle_setup(
     workspace: Workspace,
     state: dict,
     self_awareness,
-    skill_dirs: list[Path],
-    do_run_task,
-    do_run_task_stream,
 ) -> ChatSession:
     """Interactive setup wizard — reconfigure provider, model, and API key."""
     from rich.prompt import Prompt
@@ -1115,9 +1049,6 @@ async def _handle_setup(
         self_awareness=self_awareness,
         workspace=workspace,
         console=console,
-        skill_dirs=skill_dirs,
-        do_run_task=do_run_task,
-        do_run_task_stream=do_run_task_stream,
     )
 
 
@@ -1127,9 +1058,6 @@ async def _handle_minds_setup(
     workspace: Workspace,
     state: dict,
     self_awareness,
-    skill_dirs: list[Path],
-    do_run_task,
-    do_run_task_stream,
 ) -> ChatSession:
     """Interactive wizard to configure Minds (MindsDB) integration."""
     from rich.prompt import Prompt
@@ -1193,9 +1121,6 @@ async def _handle_minds_setup(
         self_awareness=self_awareness,
         workspace=workspace,
         console=console,
-        skill_dirs=skill_dirs,
-        do_run_task=do_run_task,
-        do_run_task_stream=do_run_task_stream,
     )
 
 
@@ -1219,34 +1144,12 @@ def run_chat(console: Console, settings: AntonSettings) -> None:
 
 
 async def _chat_loop(console: Console, settings: AntonSettings) -> None:
-    from anton.channel.terminal import CLIChannel
     from anton.context.self_awareness import SelfAwarenessContext
-    from anton.core.agent import Agent
     from anton.llm.client import LLMClient
-    from anton.skill.registry import SkillRegistry
     from anton.workspace import Workspace
 
     # Use a mutable container so closures always see the current client
     state: dict = {"llm_client": LLMClient.from_settings(settings)}
-    registry = SkillRegistry()
-
-    builtin = Path(__file__).resolve().parent.parent / settings.skills_dir
-    registry.discover(builtin)
-
-    user_dir = Path(settings.user_skills_dir)
-    registry.discover(user_dir)
-
-    memory = None
-    learnings_store = None
-    if settings.memory_enabled:
-        from anton.memory.learnings import LearningStore
-        from anton.memory.store import SessionStore
-
-        memory_dir = Path(settings.memory_dir)
-        memory = SessionStore(memory_dir)
-        learnings_store = LearningStore(memory_dir)
-
-    channel = CLIChannel()
 
     # Self-awareness context
     self_awareness = SelfAwarenessContext(Path(settings.context_dir))
@@ -1255,107 +1158,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     workspace = Workspace(settings.workspace_path)
     workspace.apply_env_to_process()
 
-    async def _do_run_task(task: str) -> str:
-        agent = Agent(
-            channel=channel,
-            llm_client=state["llm_client"],
-            registry=registry,
-            user_skills_dir=user_dir,
-            memory=memory,
-            learnings=learnings_store,
-            self_awareness=self_awareness,
-            skill_dirs=[builtin, user_dir],
-        )
-        return await agent.run(task)
-
-    async def _do_run_task_stream(task: str) -> AsyncIterator[StreamTaskProgress]:
-        """Run agent task, yielding progress events as StreamTaskProgress.
-
-        The final yielded StreamTaskProgress contains the execution summary
-        in its ``message`` field (phase="complete").
-        """
-        progress_ch = _ProgressChannel()
-        agent = Agent(
-            channel=progress_ch,
-            llm_client=state["llm_client"],
-            registry=registry,
-            user_skills_dir=user_dir,
-            memory=memory,
-            learnings=learnings_store,
-            self_awareness=self_awareness,
-            skill_dirs=[builtin, user_dir],
-        )
-        agent_task = asyncio.create_task(agent.run(task))
-
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(progress_ch.queue.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    if agent_task.done():
-                        break
-                    continue
-
-                if event is None:
-                    break
-
-                if isinstance(event, StatusUpdate):
-                    yield StreamTaskProgress(
-                        phase=event.phase.value,
-                        message=event.message,
-                        eta_seconds=event.eta_seconds,
-                    )
-                elif isinstance(event, TaskComplete):
-                    yield StreamTaskProgress(
-                        phase="complete",
-                        message=event.summary,
-                    )
-                    break
-                elif isinstance(event, TaskFailed):
-                    yield StreamTaskProgress(
-                        phase="failed",
-                        message=event.error_summary,
-                    )
-                    break
-
-            # Drain remaining events
-            while not progress_ch.queue.empty():
-                event = progress_ch.queue.get_nowait()
-                if isinstance(event, StatusUpdate):
-                    yield StreamTaskProgress(
-                        phase=event.phase.value,
-                        message=event.message,
-                        eta_seconds=event.eta_seconds,
-                    )
-                elif isinstance(event, TaskComplete):
-                    yield StreamTaskProgress(
-                        phase="complete",
-                        message=event.summary,
-                    )
-
-            # Re-raise any exception from the agent
-            await agent_task
-        except BaseException:
-            if not agent_task.done():
-                agent_task.cancel()
-                try:
-                    await agent_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            raise
-
     # Build runtime context so the LLM knows what it's running on
-    skill_names = [s.name for s in registry.list_all()]
     runtime_context = (
         f"- Provider: {settings.planning_provider}\n"
         f"- Planning model: {settings.planning_model}\n"
         f"- Coding model: {settings.coding_model}\n"
         f"- Workspace: {settings.workspace_path}\n"
-        f"- Available skills: {', '.join(skill_names) if skill_names else 'none discovered'}\n"
         f"- Memory: {'enabled' if settings.memory_enabled else 'disabled'}"
     )
-
-    skill_dirs = [builtin, user_dir]
 
     coding_api_key = (
         settings.anthropic_api_key if settings.coding_provider == "anthropic"
@@ -1363,13 +1173,10 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     ) or ""
     session = ChatSession(
         state["llm_client"],
-        _do_run_task,
-        run_task_stream=_do_run_task_stream,
         self_awareness=self_awareness,
         runtime_context=runtime_context,
         workspace=workspace,
         console=console,
-        skill_dirs=skill_dirs,
         coding_provider=settings.coding_provider,
         coding_api_key=coding_api_key,
         minds_api_key=os.environ.get("MINDS_API_KEY", ""),
@@ -1431,16 +1238,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 if cmd == "/setup":
                     session = await _handle_setup(
                         console, settings, workspace, state,
-                        self_awareness, skill_dirs,
-                        _do_run_task, _do_run_task_stream,
+                        self_awareness,
                     )
                 elif cmd == "/minds":
                     subcmd = parts[1].lower() if len(parts) > 1 else ""
                     if subcmd == "setup":
                         session = await _handle_minds_setup(
                             console, settings, workspace, state,
-                            self_awareness, skill_dirs,
-                            _do_run_task, _do_run_task_stream,
+                            self_awareness,
                         )
                     elif subcmd == "connect":
                         if len(parts) < 3:
@@ -1510,9 +1315,6 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     self_awareness=self_awareness,
                     workspace=workspace,
                     console=console,
-                    skill_dirs=skill_dirs,
-                    do_run_task=_do_run_task,
-                    do_run_task_stream=_do_run_task_stream,
                 )
             except KeyboardInterrupt:
                 display.abort()

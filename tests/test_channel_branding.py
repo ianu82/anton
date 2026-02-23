@@ -70,16 +70,10 @@ class TestRenderDashboard:
         from anton.channel.branding import render_dashboard
 
         mock_settings = MagicMock()
-        mock_settings.skills_dir = "skills"
-        mock_settings.user_skills_dir = "~/.anton/skills"
         mock_settings.memory_enabled = False
         mock_settings.coding_model = "claude-opus-4-6"
 
-        mock_registry = MagicMock()
-        mock_registry.list_all.return_value = []
-
-        with patch("anton.config.settings.AntonSettings", return_value=mock_settings), \
-             patch("anton.skill.registry.SkillRegistry", return_value=mock_registry):
+        with patch("anton.config.settings.AntonSettings", return_value=mock_settings):
             console = _make_console()
             render_dashboard(console)
             output = _strip_ansi(console.file.getvalue())

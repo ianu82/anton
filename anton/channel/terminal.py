@@ -18,8 +18,6 @@ from anton.events.types import (
 
 _PHASE_LABELS = {
     "planning": "[bold blue]Planning[/]",
-    "skill_discovery": "[bold cyan]Discovering skills[/]",
-    "skill_building": "[bold magenta]Building skill[/]",
     "executing": "[bold yellow]Executing[/]",
     "complete": "[bold green]Complete[/]",
     "failed": "[bold red]Failed[/]",
@@ -75,8 +73,6 @@ class TerminalChannel(Channel):
 
 _THEMED_PHASE_LABELS = {
     "planning": "[phase.planning]Planning[/]",
-    "skill_discovery": "[phase.skill_discovery]Discovering skills[/]",
-    "skill_building": "[phase.skill_building]Building skill[/]",
     "executing": "[phase.executing]Executing[/]",
     "complete": "[phase.complete]Complete[/]",
     "failed": "[phase.failed]Failed[/]",
