@@ -42,6 +42,19 @@ That's the point: you describe a problem in plain language, and Anton assembles 
 
 <img width="400" height="701" alt="image" src="https://github.com/user-attachments/assets/6e495976-0638-44a3-9094-d6a91f92ea18" />
 
+### Another example
+
+You don't even need to specify a specific website. For example, whatup with crypto? Try asking Anton this:
+
+```
+Analyze how Bitcoin has evolved over the past 12 months by summarizing the
+overall price trend and highlighting major dips and gains (e.g., moves
+greater than ~5–10%). For each significant movement, find and briefly
+explain relevant news or events that may have influenced the price,
+including dates and credible sources. Use only publicly accessible
+information and scrape the web as needed, assuming no API keys are available.
+```
+
 ## How it works
 
 Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs, operating as follows.
