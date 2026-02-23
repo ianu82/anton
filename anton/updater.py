@@ -84,7 +84,7 @@ def _check_and_update(console, settings) -> None:
         result = subprocess.run(
             ["uv", "tool", "upgrade", "anton"],
             capture_output=True,
-            timeout=60,
+            timeout=15,
         )
     except Exception:
         console.print("  [dim]Update failed, continuing...[/]")
@@ -98,7 +98,9 @@ def _check_and_update(console, settings) -> None:
 
     # Re-exec so the user gets the new version immediately
     if sys.platform == "win32":
-        subprocess.Popen([sys.executable] + sys.argv)
-        sys.exit(0)
+        # Use os.execvp with the full executable path on Windows too;
+        # Popen + sys.exit can detach from the console and cause timeouts.
+        argv0 = shutil.which(sys.argv[0]) or sys.argv[0]
+        os.execv(argv0, sys.argv)
     else:
         os.execvp(sys.argv[0], sys.argv)
