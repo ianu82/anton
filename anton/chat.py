@@ -970,7 +970,7 @@ async def _handle_setup(
     # --- Models ---
     defaults = {
         "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
-        "openai": ("gpt-5.2-mini", "gpt-5-nano"),
+        "openai": ("gpt-5-mini", "gpt-5-nano"),
     }
     default_planning, default_coding = defaults.get(provider, ("", ""))
 

@@ -172,11 +172,11 @@ def _ensure_api_key(settings) -> None:
         settings.openai_api_key = api_key
         settings.planning_provider = "openai"
         settings.coding_provider = "openai"
-        settings.planning_model = "gpt-5.2-mini"
+        settings.planning_model = "gpt-5-mini"
         settings.coding_model = "gpt-5-nano"
         ws.set_secret("ANTON_PLANNING_PROVIDER", "openai")
         ws.set_secret("ANTON_CODING_PROVIDER", "openai")
-        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-5.2-mini")
+        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-5-mini")
         ws.set_secret("ANTON_CODING_MODEL", "gpt-5-nano")
     elif provider == "openai-compatible":
         settings.openai_api_key = api_key
