@@ -1119,9 +1119,18 @@ async def _handle_minds_command(
     # 1. Always show status
     session._handle_minds_status(console)
 
-    # 2. If no API key, prompt for one
+    # 2. Confirm or set API key
     current_key = os.environ.get("MINDS_API_KEY", "")
-    if not current_key:
+    current_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
+
+    if current_key:
+        masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
+        api_key = Prompt.ask(
+            f"Minds API key [dim](Enter to keep {masked})[/]",
+            default="",
+            console=console,
+        ).strip()
+    else:
         console.print("[anton.cyan]No Minds API key configured. Let's set one up.[/]")
         api_key = Prompt.ask("Minds API key", default="", console=console).strip()
         if not api_key:
@@ -1129,19 +1138,23 @@ async def _handle_minds_command(
             console.print()
             return session
 
-        base_url = Prompt.ask(
-            "Base URL",
-            default="https://mdb.ai",
-            console=console,
-        ).strip()
+    base_url = Prompt.ask(
+        "Base URL",
+        default=current_url,
+        console=console,
+    ).strip()
 
+    changed = False
+    if api_key:
         workspace.set_secret("MINDS_API_KEY", api_key)
-        if base_url != "https://mdb.ai":
-            workspace.set_secret("MINDS_BASE_URL", base_url)
+        changed = True
+    if base_url != current_url:
+        workspace.set_secret("MINDS_BASE_URL", base_url)
+        changed = True
 
-        console.print("[anton.success]API key saved.[/]")
+    if changed:
+        console.print("[anton.success]Configuration saved.[/]")
         console.print()
-
         session = _rebuild_session(
             settings=settings,
             state=state,

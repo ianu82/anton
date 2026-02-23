@@ -817,11 +817,14 @@ class TestUnifiedMindsCommand:
         settings = MagicMock()
         state = {"llm_client": mock_llm}
 
-        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+        # Prompt responses: "" for API key (keep), "https://mdb.ai" for base URL (keep)
+        prompt_responses = iter(["", "https://mdb.ai"])
+
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key", "MINDS_BASE_URL": "https://mdb.ai"}), \
              patch.object(session, "_handle_minds_status") as mock_status, \
              patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=[]), \
              patch("rich.prompt.Prompt") as mock_prompt_cls:
-            mock_prompt_cls.ask.return_value = ""
+            mock_prompt_cls.ask.side_effect = lambda *a, **kw: next(prompt_responses)
             await _handle_minds_command(
                 console, settings, workspace, state, None, session,
             )
@@ -888,9 +891,10 @@ class TestUnifiedMindsCommand:
             {"name": "hr", "datasources": ["hr_db"]},
         ]
 
-        prompt_responses = iter(["sales", ""])  # disconnect sales, then exit
+        # "" = keep key, "https://mdb.ai" = keep URL, "sales" = toggle, "" = exit
+        prompt_responses = iter(["", "https://mdb.ai", "sales", ""])
 
-        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key", "MINDS_BASE_URL": "https://mdb.ai"}), \
              patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=minds_list), \
              patch("rich.prompt.Prompt") as mock_prompt_cls, \
              patch.object(session, "_handle_minds_disconnect") as mock_disconnect:
@@ -923,9 +927,10 @@ class TestUnifiedMindsCommand:
         state = {"llm_client": mock_llm}
 
         minds_list = [{"name": "hr", "datasources": ["hr_db"]}]
-        prompt_responses = iter(["hr", ""])
+        # "" = keep key, "https://mdb.ai" = keep URL, "hr" = toggle, "" = exit
+        prompt_responses = iter(["", "https://mdb.ai", "hr", ""])
 
-        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key"}), \
+        with patch.dict(os.environ, {"MINDS_API_KEY": "test-key", "MINDS_BASE_URL": "https://mdb.ai"}), \
              patch.object(session._minds, "list_minds", new_callable=AsyncMock, return_value=minds_list), \
              patch("rich.prompt.Prompt") as mock_prompt_cls, \
              patch.object(session, "_handle_minds_connect", new_callable=AsyncMock) as mock_connect:
