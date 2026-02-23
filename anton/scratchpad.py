@@ -344,7 +344,12 @@ class Scratchpad:
         """
         if self._venv_dir is not None:
             return
-        self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
+        if sys.platform == "win32":
+            # Use a fixed path so Windows Firewall only prompts once
+            self._venv_dir = str(Path("~/.anton/scratchpad-venv").expanduser())
+            os.makedirs(self._venv_dir, exist_ok=True)
+        else:
+            self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
         venv.create(self._venv_dir, system_site_packages=True, with_pip=False)
         # Resolve the venv python path
         bin_dir = os.path.join(self._venv_dir, "bin")
@@ -588,10 +593,12 @@ class Scratchpad:
         """Kill the process and clean up the boot script temp file and venv."""
         await self._stop_process()
         if self._venv_dir is not None:
-            try:
-                shutil.rmtree(self._venv_dir)
-            except OSError:
-                pass
+            # On Windows, keep the fixed venv so firewall rules persist
+            if sys.platform != "win32":
+                try:
+                    shutil.rmtree(self._venv_dir)
+                except OSError:
+                    pass
             self._venv_dir = None
             self._venv_python = None
 
