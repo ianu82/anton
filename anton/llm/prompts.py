@@ -29,6 +29,9 @@ not in a skill. Skills are for lightweight, reusable actions: file I/O, shell co
 API calls, text transforms.
 - Handle errors by returning SkillResult(output=None, metadata={{"error": str(e)}})
 - Do NOT include any explanation outside the code block
+- Do NOT use functions that don't exist: get_skill, get_skill_manager, get_registry, \
+get_context, get_workspace, or any other invented Anton API. The ONLY Anton APIs available \
+to skills are listed below. Anything else will crash at runtime and the skill will be quarantined.
 
 LLM ACCESS (when the skill needs AI/LLM capabilities):
 - Use ``from anton.skill.context import get_llm`` — this gives you a pre-configured \
@@ -190,10 +193,11 @@ multi-step AI workflows like classification, extraction, or analysis with struct
 - When the user asks how you solved something or wants to see your work, use the scratchpad \
 dump action — it shows a clean notebook-style summary without wasting tokens on reformatting.
 - Always use print() to produce output — scratchpad captures stdout.
-- For every exec call, provide one_line_description (what the cell does) and \
-estimated_execution_time (your estimate, e.g. '2s', '30s'). Writing the estimate \
-forces you to think about efficiency — prefer vectorized operations, batch I/O, \
-and focused cells that do one thing well.
+- IMPORTANT: Each cell has a hard timeout of 120 seconds. If exceeded, the process is \
+killed and ALL state (variables, imports, data) is lost. For every exec call, provide \
+one_line_description and estimated_execution_time_seconds (integer). If your estimate \
+exceeds 90 seconds, you MUST break the work into smaller cells. Prefer vectorized \
+operations, batch I/O, and focused cells that do one thing well.
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
 

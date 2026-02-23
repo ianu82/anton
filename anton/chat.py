@@ -136,7 +136,13 @@ SCRATCHPAD_TOOL = {
         "get_minds() returns a pre-configured Minds client (sync) for natural language "
         "database queries. Call minds.ask(question, mind) to query, then minds.export() "
         "to get CSV data — perfect for pd.read_csv(io.StringIO(csv)). Also: minds.data() "
-        "for markdown tables, minds.catalog(datasource) to discover tables."
+        "for markdown tables, minds.catalog(datasource) to discover tables.\n\n"
+        "IMPORTANT: Each cell has a maximum execution time of 120 seconds. If a cell "
+        "exceeds this limit the process is killed and all state is lost. You MUST provide "
+        "an estimated_execution_time_seconds for every exec call. If your estimate exceeds "
+        "90 seconds, break the work into smaller cells. For long-running operations "
+        "(large downloads, heavy computation), split into incremental steps that each "
+        "complete well within the limit."
     ),
     "input_schema": {
         "type": "object",
@@ -158,9 +164,9 @@ SCRATCHPAD_TOOL = {
                 "type": "string",
                 "description": "Brief description of what this cell does (e.g. 'Scrape listing prices'). Required for exec.",
             },
-            "estimated_execution_time": {
-                "type": "string",
-                "description": "Estimated execution time (e.g. '2s', '30s', '2min'). Think about efficiency — write focused, fast code.",
+            "estimated_execution_time_seconds": {
+                "type": "integer",
+                "description": "Estimated execution time in seconds. Must be under 90. If you estimate more, break the work into smaller cells.",
             },
         },
         "required": ["action", "name"],
@@ -249,6 +255,10 @@ class _ProgressChannel(Channel):
 
     async def close(self) -> None:
         await self.queue.put(None)
+
+
+_MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
+_MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
 
 
 class ChatSession:
@@ -453,7 +463,21 @@ class ChatSession:
                     return install_result
 
             description = tc_input.get("one_line_description", "")
-            estimated_time = tc_input.get("estimated_execution_time", "")
+            estimated_seconds = tc_input.get("estimated_execution_time_seconds", 0)
+            if isinstance(estimated_seconds, str):
+                try:
+                    estimated_seconds = int(estimated_seconds)
+                except ValueError:
+                    estimated_seconds = 0
+
+            if estimated_seconds > 90:
+                return (
+                    f"Rejected: estimated execution time ({estimated_seconds}s) exceeds the 90s safety limit. "
+                    f"The cell timeout is 120s and exceeding it kills the process and loses all state. "
+                    f"Break this work into smaller cells that each complete within 90 seconds."
+                )
+
+            estimated_time = f"{estimated_seconds}s" if estimated_seconds > 0 else ""
             cell = await pad.execute(code, description=description, estimated_time=estimated_time)
 
             parts: list[str] = []
@@ -704,7 +728,27 @@ class ChatSession:
         )
 
         # Handle tool calls (execute_task, update_context, request_secret)
+        tool_round = 0
+        error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
+
         while response.tool_calls:
+            tool_round += 1
+            if tool_round > _MAX_TOOL_ROUNDS:
+                self._history.append({"role": "assistant", "content": response.content or ""})
+                self._history.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                        "Stop retrying. Summarize what you accomplished and what failed, "
+                        "then tell the user what they can do to unblock the issue."
+                    ),
+                })
+                response = await self._llm.plan(
+                    system=system,
+                    messages=self._history,
+                )
+                break
+
             # Build assistant message with content blocks
             assistant_content: list[dict] = []
             if response.content:
@@ -724,8 +768,7 @@ class ChatSession:
                 if tc.name == "execute_task":
                     task_desc = tc.input.get("task", "")
                     try:
-                        await self._run_task(task_desc)
-                        result_text = f"Task completed: {task_desc}"
+                        result_text = await self._run_task(task_desc)
                     except Exception as exc:
                         result_text = f"Task failed: {exc}"
                 elif tc.name == "update_context":
@@ -738,6 +781,24 @@ class ChatSession:
                     result_text = await self._handle_minds(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
+
+                # Track consecutive errors per tool
+                is_error = any(
+                    marker in result_text
+                    for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+                )
+                if is_error:
+                    error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
+                else:
+                    error_streak[tc.name] = 0
+
+                # Circuit breaker: if same tool fails too many times, inject a stop signal
+                if error_streak.get(tc.name, 0) >= _MAX_CONSECUTIVE_ERRORS:
+                    result_text += (
+                        f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
+                        "in a row. Stop retrying this approach. Either try a completely different "
+                        "strategy or tell the user what's going wrong so they can help."
+                    )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -787,8 +848,29 @@ class ChatSession:
 
         llm_response = response.response
 
-        # Tool-call loop
+        # Tool-call loop with circuit breaker
+        tool_round = 0
+        error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
+
         while llm_response.tool_calls:
+            tool_round += 1
+            if tool_round > _MAX_TOOL_ROUNDS:
+                self._history.append({"role": "assistant", "content": llm_response.content or ""})
+                self._history.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                        "Stop retrying. Summarize what you accomplished and what failed, "
+                        "then tell the user what they can do to unblock the issue."
+                    ),
+                })
+                async for event in self._llm.plan_stream(
+                    system=system,
+                    messages=self._history,
+                ):
+                    yield event
+                return
+
             # Build assistant message with content blocks
             assistant_content: list[dict] = []
             if llm_response.content:
@@ -809,11 +891,14 @@ class ChatSession:
                     task_desc = tc.input.get("task", "")
                     try:
                         if self._run_task_stream is not None:
+                            last_summary = ""
                             async for progress in self._run_task_stream(task_desc):
                                 yield progress
+                                if progress.phase in ("complete", "failed"):
+                                    last_summary = progress.message
+                            result_text = last_summary or f"Task completed: {task_desc}"
                         else:
-                            await self._run_task(task_desc)
-                        result_text = f"Task completed: {task_desc}"
+                            result_text = await self._run_task(task_desc)
                     except Exception as exc:
                         result_text = f"Task failed: {exc}"
                 elif tc.name == "update_context":
@@ -833,6 +918,24 @@ class ChatSession:
                     result_text = await self._handle_minds(tc.input)
                 else:
                     result_text = f"Unknown tool: {tc.name}"
+
+                # Track consecutive errors per tool
+                is_error = any(
+                    marker in result_text
+                    for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+                )
+                if is_error:
+                    error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
+                else:
+                    error_streak[tc.name] = 0
+
+                # Circuit breaker: if same tool fails too many times, inject a stop signal
+                if error_streak.get(tc.name, 0) >= _MAX_CONSECUTIVE_ERRORS:
+                    result_text += (
+                        f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
+                        "in a row. Stop retrying this approach. Either try a completely different "
+                        "strategy or tell the user what's going wrong so they can help."
+                    )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -1152,7 +1255,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     workspace = Workspace(settings.workspace_path)
     workspace.apply_env_to_process()
 
-    async def _do_run_task(task: str) -> None:
+    async def _do_run_task(task: str) -> str:
         agent = Agent(
             channel=channel,
             llm_client=state["llm_client"],
@@ -1163,10 +1266,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
             self_awareness=self_awareness,
             skill_dirs=[builtin, user_dir],
         )
-        await agent.run(task)
+        return await agent.run(task)
 
     async def _do_run_task_stream(task: str) -> AsyncIterator[StreamTaskProgress]:
-        """Run agent task, yielding progress events as StreamTaskProgress."""
+        """Run agent task, yielding progress events as StreamTaskProgress.
+
+        The final yielded StreamTaskProgress contains the execution summary
+        in its ``message`` field (phase="complete").
+        """
         progress_ch = _ProgressChannel()
         agent = Agent(
             channel=progress_ch,
@@ -1198,7 +1305,17 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         message=event.message,
                         eta_seconds=event.eta_seconds,
                     )
-                elif isinstance(event, (TaskComplete, TaskFailed)):
+                elif isinstance(event, TaskComplete):
+                    yield StreamTaskProgress(
+                        phase="complete",
+                        message=event.summary,
+                    )
+                    break
+                elif isinstance(event, TaskFailed):
+                    yield StreamTaskProgress(
+                        phase="failed",
+                        message=event.error_summary,
+                    )
                     break
 
             # Drain remaining events
@@ -1209,6 +1326,11 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         phase=event.phase.value,
                         message=event.message,
                         eta_seconds=event.eta_seconds,
+                    )
+                elif isinstance(event, TaskComplete):
+                    yield StreamTaskProgress(
+                        phase="complete",
+                        message=event.summary,
                     )
 
             # Re-raise any exception from the agent

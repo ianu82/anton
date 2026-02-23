@@ -55,12 +55,14 @@ class Agent:
         self._planner = Planner(llm_client, registry)
         self._executor = Executor(registry, self._bus)
 
-    async def run(self, task: str) -> None:
+    async def run(self, task: str) -> str:
+        """Run the agent on a task and return the execution summary."""
         # Wire the event bus to the channel
         queue = self._bus.subscribe()
         relay_task = asyncio.create_task(self._relay_events(queue))
 
         session_id: str | None = None
+        summary = ""
 
         try:
             # Start session if memory enabled
@@ -172,6 +174,7 @@ class Agent:
             if self._memory is not None and session_id is not None:
                 await self._memory.fail_session(session_id, str(exc))
             await self._bus.publish(TaskFailed(error_summary=str(exc)))
+            summary = f"Task failed: {exc}"
 
         finally:
             # Stop relay
@@ -181,6 +184,8 @@ class Agent:
             except asyncio.CancelledError:
                 pass
             self._bus.unsubscribe(queue)
+
+        return summary
 
     def _needs_skill_building(self, plan: Plan) -> bool:
         """Check if the plan requires building any skills."""

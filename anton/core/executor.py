@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from anton.core.planner import Plan
 from anton.events.bus import EventBus
 from anton.events.types import Phase, StatusUpdate
 from anton.skill.base import SkillResult
 from anton.skill.registry import SkillRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,7 +73,15 @@ class Executor:
                 continue
 
             step_start = time.monotonic()
-            result = await skill.execute(**step.parameters)
+            try:
+                result = await skill.execute(**step.parameters)
+            except Exception as exc:
+                result = SkillResult(
+                    output=None,
+                    metadata={"error": f"Skill crashed: {exc}"},
+                )
+                # Quarantine the broken skill so it doesn't keep failing
+                self._quarantine_skill(skill.name, skill.source_path, exc)
             step_duration = time.monotonic() - step_start
 
             results.append(
@@ -83,3 +95,20 @@ class Executor:
 
         total_duration = time.monotonic() - total_start
         return ExecutionResult(step_results=results, total_duration_seconds=total_duration)
+
+    def _quarantine_skill(self, name: str, source_path: Path | None, exc: Exception) -> None:
+        """Rename a broken skill to .broken and unregister it."""
+        logger.warning("Quarantining broken skill '%s': %s", name, exc)
+        self._registry.unregister(name)
+        if source_path is not None and source_path.exists():
+            broken_path = source_path.with_suffix(".py.broken")
+            try:
+                source_path.rename(broken_path)
+                # Write the error details alongside
+                error_path = source_path.with_suffix(".error")
+                error_path.write_text(
+                    f"Quarantined due to runtime error:\n{exc}\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass

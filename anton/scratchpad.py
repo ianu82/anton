@@ -335,33 +335,88 @@ class Scratchpad:
     _venv_python: str | None = field(default=None, repr=False)
     _installed_packages: set[str] = field(default_factory=set, repr=False)
 
+    _MAX_VENV_RETRIES = 3
+
     def _ensure_venv(self) -> None:
         """Create a lightweight per-scratchpad venv (idempotent).
 
         Uses system_site_packages=True so the real system packages are visible.
         If we're running inside a parent venv, we also drop a .pth file so the
         parent venv's site-packages are visible in the child.
+
+        If the venv is broken (stale symlinks, missing Python binary), it is
+        deleted and recreated from scratch. Gives up after _MAX_VENV_RETRIES.
         """
-        if self._venv_dir is not None:
+        if self._venv_dir is not None and self._verify_venv_python():
             return
+
+        last_error: Exception | None = None
+        for attempt in range(1, self._MAX_VENV_RETRIES + 1):
+            try:
+                self._create_venv()
+                if self._verify_venv_python():
+                    self._setup_parent_site_packages()
+                    return
+                # Python binary exists but doesn't run — nuke and retry
+                raise RuntimeError(f"venv Python binary at {self._venv_python} is not functional")
+            except Exception as exc:
+                last_error = exc
+                # Clean up the broken venv before retrying
+                self._nuke_venv()
+
+        raise RuntimeError(
+            f"Failed to create a working Python venv after {self._MAX_VENV_RETRIES} attempts. "
+            f"Last error: {last_error}. "
+            f"Try running: python3 -c 'print(\"ok\")' to verify your Python installation."
+        )
+
+    def _create_venv(self) -> None:
+        """Allocate a venv directory and create the virtual environment."""
         if sys.platform == "win32":
-            # Use a fixed path so Windows Firewall only prompts once
             self._venv_dir = str(Path("~/.anton/scratchpad-venv").expanduser())
             os.makedirs(self._venv_dir, exist_ok=True)
         else:
             self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
-        venv.create(self._venv_dir, system_site_packages=True, with_pip=False)
-        # Resolve the venv python path
+        venv.create(self._venv_dir, system_site_packages=True, with_pip=False, clear=True)
         bin_dir = os.path.join(self._venv_dir, "bin")
         if sys.platform == "win32":
             bin_dir = os.path.join(self._venv_dir, "Scripts")
         self._venv_python = os.path.join(bin_dir, "python")
 
-        # If running inside a parent venv, make its packages visible via .pth file
+    def _verify_venv_python(self) -> bool:
+        """Check that the venv Python binary exists and can execute."""
+        if self._venv_python is None:
+            return False
+        if not os.path.exists(self._venv_python):
+            return False
+        # Quick smoke test — run python with a trivial command
+        try:
+            import subprocess
+            result = subprocess.run(
+                [self._venv_python, "-c", "print('ok')"],
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0 and "ok" in result.stdout.decode()
+        except Exception:
+            return False
+
+    def _nuke_venv(self) -> None:
+        """Delete the venv directory entirely so it can be recreated."""
+        if self._venv_dir is not None:
+            try:
+                shutil.rmtree(self._venv_dir)
+            except OSError:
+                pass
+        self._venv_dir = None
+        self._venv_python = None
+        self._installed_packages.clear()
+
+    def _setup_parent_site_packages(self) -> None:
+        """Make parent venv's packages visible in the child venv."""
         if sys.prefix != sys.base_prefix:
             import site as _site
             parent_site = _site.getsitepackages()
-            # Find the child venv's site-packages to place the .pth file
             child_site = None
             for dirpath, dirnames, _ in os.walk(self._venv_dir):
                 if "site-packages" in dirnames:
@@ -412,13 +467,21 @@ class Scratchpad:
         if _anton_root not in python_path:
             env["PYTHONPATH"] = _anton_root + (os.pathsep + python_path if python_path else "")
 
-        self._proc = await asyncio.create_subprocess_exec(
-            self._venv_python, path,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                self._venv_python, path,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            # Python binary is missing or broken — nuke venv and raise
+            self._nuke_venv()
+            raise RuntimeError(
+                f"Failed to start scratchpad: {exc}. "
+                f"The Python venv has been deleted and will be recreated on next attempt."
+            ) from exc
 
     async def execute(self, code: str, *, description: str = "", estimated_time: str = "") -> Cell:
         """Send code to the subprocess, read the JSON result, return a Cell."""
@@ -584,9 +647,16 @@ class Scratchpad:
             self._boot_path = None
 
     async def reset(self) -> None:
-        """Kill the process, clear cells, restart. Venv (and installed packages) survive."""
+        """Kill the process, clear cells, restart.
+
+        If the venv is healthy, it's reused (installed packages survive).
+        If the venv is broken, it's deleted and recreated from scratch.
+        """
         await self._stop_process()
         self.cells.clear()
+        # If the venv Python is broken, nuke it so _ensure_venv recreates it
+        if not self._verify_venv_python():
+            self._nuke_venv()
         await self.start()
 
     async def close(self) -> None:
