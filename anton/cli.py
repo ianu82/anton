@@ -115,9 +115,9 @@ def _ensure_api_key(settings) -> None:
 
     providers = {"1": "anthropic", "2": "openai", "3": "openai-compatible"}
     console.print("[anton.cyan]Available providers:[/]")
-    console.print("  [bold]1[/]  Anthropic (Claude)")
-    console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
-    console.print("  [bold]3[/]  OpenAI-compatible (custom endpoint)")
+    console.print(r"  [bold]1[/]  Anthropic (Claude)                    [dim]\[recommended][/]")
+    console.print(r"  [bold]2[/]  OpenAI (GPT / o-series)               [dim]\[experimental][/]")
+    console.print(r"  [bold]3[/]  OpenAI-compatible (custom endpoint)   [dim]\[experimental][/]")
     console.print()
 
     choice = Prompt.ask(

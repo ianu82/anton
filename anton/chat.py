@@ -949,6 +949,7 @@ async def _handle_setup(
     workspace: Workspace,
     state: dict,
     self_awareness,
+    session: ChatSession,
 ) -> ChatSession:
     """Interactive setup wizard — reconfigure provider, model, and API key."""
     from rich.prompt import Prompt
@@ -965,9 +966,9 @@ async def _handle_setup(
     providers = {"1": "anthropic", "2": "openai", "3": "openai-compatible"}
     current_num = {"anthropic": "1", "openai": "2", "openai-compatible": "3"}.get(settings.planning_provider, "1")
     console.print("[anton.cyan]Available providers:[/]")
-    console.print("  [bold]1[/]  Anthropic (Claude)")
-    console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
-    console.print("  [bold]3[/]  OpenAI-compatible (custom endpoint)")
+    console.print(r"  [bold]1[/]  Anthropic (Claude)                    [dim]\[recommended][/]")
+    console.print(r"  [bold]2[/]  OpenAI (GPT / o-series)               [dim]\[experimental][/]")
+    console.print(r"  [bold]3[/]  OpenAI-compatible (custom endpoint)   [dim]\[experimental][/]")
     console.print()
 
     choice = Prompt.ask(
@@ -1038,6 +1039,14 @@ async def _handle_setup(
         setattr(settings, key_attr, api_key)
         key_name = f"ANTON_{provider.upper()}_API_KEY"
         workspace.set_secret(key_name, api_key)
+
+    # Validate that we actually have an API key for the chosen provider
+    final_key = getattr(settings, key_attr)
+    if not final_key:
+        console.print()
+        console.print(f"[anton.error]No API key set for {provider}. Configuration not applied.[/]")
+        console.print()
+        return session
 
     console.print()
     console.print("[anton.success]Configuration updated.[/]")
@@ -1238,7 +1247,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 if cmd == "/setup":
                     session = await _handle_setup(
                         console, settings, workspace, state,
-                        self_awareness,
+                        self_awareness, session,
                     )
                 elif cmd == "/minds":
                     subcmd = parts[1].lower() if len(parts) > 1 else ""
