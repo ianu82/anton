@@ -31,14 +31,7 @@ anton
 
 That drops you into a conversation. Talk to Anton like a person.
 
-### Prerequisites
-
-- **git** — required ([macOS](https://git-scm.com/downloads/mac) / `sudo apt install git` / `winget install Git.Git`)
-- **Python 3.11+** — optional (uv downloads it automatically if missing)
-- **curl** — macOS/Linux only, usually pre-installed
-- Internet connection. No admin/sudo required.
-
-Try this:
+Once running try asking anton anything, for example this:
 
 ```
 you> Information about inflation in the US is found on this website,
@@ -180,9 +173,20 @@ uv tool upgrade anton
 uv tool uninstall anton
 ```
 
-## Why "Anton"?
+### Prerequisites
 
-From *Silicon Valley*. Gilfoyle's AI — Son of Anton — was an autonomous system that wrote code, made its own decisions, and occasionally went rogue. We kept the name, dropped the "Son of." Same energy.
+- **git** — required ([macOS](https://git-scm.com/downloads/mac) / `sudo apt install git` / `winget install Git.Git`)
+- **Python 3.11+** — optional (uv downloads it automatically if missing)
+- **curl** — macOS/Linux only, usually pre-installed
+- Internet connection. No admin/sudo required.
+
+## Is "Anton" a Mind?
+
+Yes, at mindsDB we build intelligent AI systems that collaborate with people to accomplish tasks, inspired by the culture series books, so yes, Anton is a Mind :)
+
+## Why the name "Anton"?
+
+We really enjoyed the show *Silicon Valley*. Gilfoyle's AI — Son of Anton — was an autonomous system that wrote code, made its own decisions, and occasionally went rogue. We thought it was was great name for an AI that can learn on its own, so we kept Anton, dropped the "Son of".
 
 ## License
 
