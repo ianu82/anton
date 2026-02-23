@@ -129,9 +129,8 @@ uv tool uninstall anton
 
 ## How is Anton different from Claude Code / Codex?
 
-Those are coding tools. Anton is a *doing* tool.
-
-Claude Code and OpenAI Codex live inside your codebase — they read your repo, edit your files etc. The code they write *is* the product. Anton doesn't care or needs a repo. It writes code too, but that code is a means to an end, therefore we introduced the scratchpad logic: fetch a page, parse a table, plot a chart, call an API, crunch some numbers. The output is the answer, not the source file.
+Anton is a *doing* tool not a coding tool. Tools like Claude Code live inside your codebase — they read your repo, edit your files etc. The code they write *is* the focus. 
+Anton on the other hand, doesn't care or needs a coding repo. Yes, it writes code too, but that code is a means to an end, which is why we introduced the scratchpad logic, so Anton can fetch a page, parse a table, plot a chart, call an API, crunch some numbers, ... whatever it needs to solve a problem. The output is the answer, not the source file.
 
 If you're coding a commercial app, use a coding agent. If you need something *done* — a dataset analyzed, a report generated, a workflow automated — talk to Anton.
 
