@@ -222,6 +222,13 @@ Schema catalog:
 
 _MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
 _MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
+_RESILIENCE_NUDGE_AT = 2  # Inject resilience nudge after this many consecutive errors
+_RESILIENCE_NUDGE = (
+    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
+    "asking the user for help, try a creative workaround — different headers/user-agent, "
+    "a public API, archive.org, an alternate library, or a completely different data source. "
+    "Only involve the user if the problem truly requires something only they can provide."
+)
 
 
 class ChatSession:
@@ -687,6 +694,7 @@ class ChatSession:
         # Handle tool calls (execute_task, update_context, request_secret)
         tool_round = 0
         error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
+        resilience_nudged: set[str] = set()  # tools that have been nudged this streak
 
         while response.tool_calls:
             tool_round += 1
@@ -745,9 +753,16 @@ class ChatSession:
                     error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
                 else:
                     error_streak[tc.name] = 0
+                    resilience_nudged.discard(tc.name)
+
+                # Resilience nudge: encourage creative workarounds before circuit breaker
+                streak = error_streak.get(tc.name, 0)
+                if streak >= _RESILIENCE_NUDGE_AT and tc.name not in resilience_nudged:
+                    result_text += _RESILIENCE_NUDGE
+                    resilience_nudged.add(tc.name)
 
                 # Circuit breaker: if same tool fails too many times, inject a stop signal
-                if error_streak.get(tc.name, 0) >= _MAX_CONSECUTIVE_ERRORS:
+                if streak >= _MAX_CONSECUTIVE_ERRORS:
                     result_text += (
                         f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
                         "in a row. Stop retrying this approach. Either try a completely different "
@@ -805,6 +820,7 @@ class ChatSession:
         # Tool-call loop with circuit breaker
         tool_round = 0
         error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
+        resilience_nudged: set[str] = set()  # tools that have been nudged this streak
 
         while llm_response.tool_calls:
             tool_round += 1
@@ -871,9 +887,16 @@ class ChatSession:
                     error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
                 else:
                     error_streak[tc.name] = 0
+                    resilience_nudged.discard(tc.name)
+
+                # Resilience nudge: encourage creative workarounds before circuit breaker
+                streak = error_streak.get(tc.name, 0)
+                if streak >= _RESILIENCE_NUDGE_AT and tc.name not in resilience_nudged:
+                    result_text += _RESILIENCE_NUDGE
+                    resilience_nudged.add(tc.name)
 
                 # Circuit breaker: if same tool fails too many times, inject a stop signal
-                if error_streak.get(tc.name, 0) >= _MAX_CONSECUTIVE_ERRORS:
+                if streak >= _MAX_CONSECUTIVE_ERRORS:
                     result_text += (
                         f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
                         "in a row. Stop retrying this approach. Either try a completely different "
