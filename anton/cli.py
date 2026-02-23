@@ -157,12 +157,12 @@ def _ensure_api_key(settings) -> None:
         settings.openai_api_key = api_key
         settings.planning_provider = "openai"
         settings.coding_provider = "openai"
-        settings.planning_model = "gpt-4.1"
-        settings.coding_model = "gpt-4.1"
+        settings.planning_model = "gpt-5-mini"
+        settings.coding_model = "gpt-5-nano"
         ws.set_secret("ANTON_PLANNING_PROVIDER", "openai")
         ws.set_secret("ANTON_CODING_PROVIDER", "openai")
-        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-4.1")
-        ws.set_secret("ANTON_CODING_MODEL", "gpt-4.1")
+        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-5-mini")
+        ws.set_secret("ANTON_CODING_MODEL", "gpt-5-nano")
 
     console.print()
     console.print(f"[anton.success]Saved to {ws.env_path}[/]")
