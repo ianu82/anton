@@ -146,10 +146,12 @@ def _translate_user_blocks(blocks: list[dict]) -> list[dict]:
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
+        if base_url:
+            kwargs["base_url"] = base_url
         self._client = openai.AsyncOpenAI(**kwargs)
 
     async def complete(

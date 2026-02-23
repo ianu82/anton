@@ -23,7 +23,7 @@ class TestSkillDecorator:
         # The function should still be the original coroutine function
         import asyncio
 
-        result = asyncio.get_event_loop().run_until_complete(echo("hello"))
+        result = asyncio.run(echo("hello"))
         assert result.output == "hello"
 
 

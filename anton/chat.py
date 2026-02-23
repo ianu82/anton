@@ -925,20 +925,35 @@ async def _handle_setup(
     console.print()
 
     # --- Provider ---
-    providers = {"1": "anthropic", "2": "openai"}
-    current_num = "1" if settings.planning_provider == "anthropic" else "2"
+    providers = {"1": "anthropic", "2": "openai", "3": "openai-compatible"}
+    current_num = {"anthropic": "1", "openai": "2", "openai-compatible": "3"}.get(settings.planning_provider, "1")
     console.print("[anton.cyan]Available providers:[/]")
     console.print("  [bold]1[/]  Anthropic (Claude)")
     console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
+    console.print("  [bold]3[/]  OpenAI-compatible (custom endpoint)")
     console.print()
 
     choice = Prompt.ask(
         "Select provider",
-        choices=["1", "2"],
+        choices=["1", "2", "3"],
         default=current_num,
         console=console,
     )
     provider = providers[choice]
+
+    # --- Base URL (OpenAI-compatible only) ---
+    if provider == "openai-compatible":
+        current_base_url = settings.openai_base_url or ""
+        console.print()
+        base_url = Prompt.ask(
+            f"API base URL [dim](e.g. http://localhost:11434/v1)[/]",
+            default=current_base_url,
+            console=console,
+        )
+        base_url = base_url.strip()
+        if base_url:
+            settings.openai_base_url = base_url
+            workspace.set_secret("ANTON_OPENAI_BASE_URL", base_url)
 
     # --- API key ---
     key_attr = "anthropic_api_key" if provider == "anthropic" else "openai_api_key"
@@ -955,7 +970,7 @@ async def _handle_setup(
     # --- Models ---
     defaults = {
         "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
-        "openai": ("gpt-4.1", "gpt-4.1-mini"),
+        "openai": ("gpt-5.2-mini", "gpt-5-nano"),
     }
     default_planning, default_coding = defaults.get(provider, ("", ""))
 

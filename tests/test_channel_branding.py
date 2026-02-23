@@ -44,7 +44,8 @@ class TestRenderBanner:
         console = _make_console()
         render_banner(console)
         output = _strip_ansi(console.file.getvalue())
-        assert "v0.1.0" in output
+        from anton import __version__
+        assert f"v{__version__}" in output
 
     def test_banner_contains_robot(self):
         from anton.channel.branding import render_banner

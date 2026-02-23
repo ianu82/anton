@@ -100,7 +100,7 @@ def _has_api_key(settings) -> bool:
     for p in providers:
         if p == "anthropic" and not (settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")):
             return False
-        if p == "openai" and not (settings.openai_api_key or os.environ.get("OPENAI_API_KEY")):
+        if p in ("openai", "openai-compatible") and not (settings.openai_api_key or os.environ.get("OPENAI_API_KEY")):
             return False
     return True
 
@@ -114,10 +114,11 @@ def _ensure_api_key(settings) -> None:
     console.print("[anton.warning]No API key configured.[/]")
     console.print()
 
-    providers = {"1": "anthropic", "2": "openai"}
+    providers = {"1": "anthropic", "2": "openai", "3": "openai-compatible"}
     console.print("[anton.cyan]Available providers:[/]")
     console.print("  [bold]1[/]  Anthropic (Claude)")
     console.print("  [bold]2[/]  OpenAI (GPT / o-series)")
+    console.print("  [bold]3[/]  OpenAI-compatible (custom endpoint)")
     console.print()
 
     choice = Prompt.ask(
@@ -135,8 +136,22 @@ def _ensure_api_key(settings) -> None:
 
     ws = Workspace(settings.workspace_path)
 
+    # For OpenAI-compatible, ask for the base URL first
+    if provider == "openai-compatible":
+        base_url = Prompt.ask(
+            "Enter the API base URL (e.g. http://localhost:11434/v1)",
+            console=console,
+        )
+        if not base_url.strip():
+            console.print("[anton.error]No base URL provided. Exiting.[/]")
+            raise typer.Exit(1)
+        base_url = base_url.strip()
+        settings.openai_base_url = base_url
+        ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
+        console.print()
+
     api_key = Prompt.ask(
-        f"Enter your {provider.title()} API key",
+        f"Enter your API key",
         console=console,
     )
 
@@ -145,7 +160,7 @@ def _ensure_api_key(settings) -> None:
         raise typer.Exit(1)
 
     api_key = api_key.strip()
-    key_name = f"ANTON_{provider.upper()}_API_KEY"
+    key_name = "ANTON_OPENAI_API_KEY" if provider in ("openai", "openai-compatible") else "ANTON_ANTHROPIC_API_KEY"
 
     # Store via secret vault — never passes through LLM
     ws.set_secret(key_name, api_key)
@@ -157,12 +172,27 @@ def _ensure_api_key(settings) -> None:
         settings.openai_api_key = api_key
         settings.planning_provider = "openai"
         settings.coding_provider = "openai"
-        settings.planning_model = "gpt-5-mini"
+        settings.planning_model = "gpt-5.2-mini"
         settings.coding_model = "gpt-5-nano"
         ws.set_secret("ANTON_PLANNING_PROVIDER", "openai")
         ws.set_secret("ANTON_CODING_PROVIDER", "openai")
-        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-5-mini")
+        ws.set_secret("ANTON_PLANNING_MODEL", "gpt-5.2-mini")
         ws.set_secret("ANTON_CODING_MODEL", "gpt-5-nano")
+    elif provider == "openai-compatible":
+        settings.openai_api_key = api_key
+        settings.planning_provider = "openai-compatible"
+        settings.coding_provider = "openai-compatible"
+
+        console.print()
+        planning_model = Prompt.ask("Planning model", console=console)
+        coding_model = Prompt.ask("Coding model", console=console)
+
+        settings.planning_model = planning_model
+        settings.coding_model = coding_model
+        ws.set_secret("ANTON_PLANNING_PROVIDER", "openai-compatible")
+        ws.set_secret("ANTON_CODING_PROVIDER", "openai-compatible")
+        ws.set_secret("ANTON_PLANNING_MODEL", planning_model)
+        ws.set_secret("ANTON_CODING_MODEL", coding_model)
 
     console.print()
     console.print(f"[anton.success]Saved to {ws.env_path}[/]")
