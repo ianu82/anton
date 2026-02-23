@@ -206,7 +206,9 @@ VISUALIZATIONS (charts, plots, maps, dashboards, reports):
 as polished HTML pages — never raw PNGs or bare image files.
 - Save output to `.anton/output/` (create it if needed). Use descriptive filenames like \
 `cpi_stacked_chart.html`, not `output.html`.
-- Auto-open in the browser: `import webbrowser; webbrowser.open(f'file://{{path}}')`.
+- Auto-open in the browser using the ABSOLUTE path (use `os.path.abspath()`): \
+`import os, webbrowser; webbrowser.open(f'file://{{os.path.abspath(path)}}')`. \
+Never use a relative path — it will fail on most systems.
 - Make it look good by default. Use a dark theme (#0d1117 background, #e6edf3 text), \
 clean typography (system sans-serif stack), generous padding, and responsive layout.
 - Prefer Plotly over matplotlib for interactive HTML charts. Plotly exports self-contained \

@@ -6,8 +6,6 @@ import re
 import shutil
 import subprocess
 import threading
-import time
-from pathlib import Path
 
 
 _TOTAL_TIMEOUT = 10  # Hard ceiling — update check never blocks startup longer than this
@@ -51,16 +49,6 @@ def _check_and_update(result: dict, settings) -> None:
     if shutil.which("uv") is None:
         return
 
-    # Check cache — skip if checked less than 1 hour ago
-    cache_file = Path("~/.anton/.last_update_check").expanduser()
-    try:
-        if cache_file.is_file():
-            last_check = float(cache_file.read_text().strip())
-            if time.time() - last_check < 3600:
-                return
-    except (ValueError, OSError):
-        pass
-
     # Fetch remote __init__.py to get __version__
     import urllib.request
 
@@ -88,13 +76,6 @@ def _check_and_update(result: dict, settings) -> None:
         remote_ver = Version(remote_version_str)
     except InvalidVersion:
         return
-
-    # Write cache timestamp regardless of whether update is needed
-    try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(str(time.time()))
-    except OSError:
-        pass
 
     if remote_ver <= local_ver:
         return
