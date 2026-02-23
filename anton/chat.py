@@ -765,22 +765,22 @@ class ChatSession:
             # Process each tool call
             tool_results: list[dict] = []
             for tc in response.tool_calls:
-                if tc.name == "execute_task":
-                    task_desc = tc.input.get("task", "")
-                    try:
+                try:
+                    if tc.name == "execute_task":
+                        task_desc = tc.input.get("task", "")
                         result_text = await self._run_task(task_desc)
-                    except Exception as exc:
-                        result_text = f"Task failed: {exc}"
-                elif tc.name == "update_context":
-                    result_text = self._handle_update_context(tc.input)
-                elif tc.name == "request_secret":
-                    result_text = self._handle_request_secret(tc.input)
-                elif tc.name == "scratchpad":
-                    result_text = await self._handle_scratchpad(tc.input)
-                elif tc.name == "minds":
-                    result_text = await self._handle_minds(tc.input)
-                else:
-                    result_text = f"Unknown tool: {tc.name}"
+                    elif tc.name == "update_context":
+                        result_text = self._handle_update_context(tc.input)
+                    elif tc.name == "request_secret":
+                        result_text = self._handle_request_secret(tc.input)
+                    elif tc.name == "scratchpad":
+                        result_text = await self._handle_scratchpad(tc.input)
+                    elif tc.name == "minds":
+                        result_text = await self._handle_minds(tc.input)
+                    else:
+                        result_text = f"Unknown tool: {tc.name}"
+                except Exception as exc:
+                    result_text = f"Tool '{tc.name}' failed: {exc}"
 
                 # Track consecutive errors per tool
                 is_error = any(
@@ -887,9 +887,9 @@ class ChatSession:
             # Process each tool call
             tool_results: list[dict] = []
             for tc in llm_response.tool_calls:
-                if tc.name == "execute_task":
-                    task_desc = tc.input.get("task", "")
-                    try:
+                try:
+                    if tc.name == "execute_task":
+                        task_desc = tc.input.get("task", "")
                         if self._run_task_stream is not None:
                             last_summary = ""
                             async for progress in self._run_task_stream(task_desc):
@@ -899,25 +899,25 @@ class ChatSession:
                             result_text = last_summary or f"Task completed: {task_desc}"
                         else:
                             result_text = await self._run_task(task_desc)
-                    except Exception as exc:
-                        result_text = f"Task failed: {exc}"
-                elif tc.name == "update_context":
-                    result_text = self._handle_update_context(tc.input)
-                elif tc.name == "request_secret":
-                    result_text = self._handle_request_secret(tc.input)
-                elif tc.name == "scratchpad":
-                    result_text = await self._handle_scratchpad(tc.input)
-                    if tc.input.get("action") == "dump":
-                        yield StreamToolResult(content=result_text)
-                        result_text = (
-                            "The full notebook has been displayed to the user above. "
-                            "Do not repeat it. Here is the content for your reference:\n\n"
-                            + result_text
-                        )
-                elif tc.name == "minds":
-                    result_text = await self._handle_minds(tc.input)
-                else:
-                    result_text = f"Unknown tool: {tc.name}"
+                    elif tc.name == "update_context":
+                        result_text = self._handle_update_context(tc.input)
+                    elif tc.name == "request_secret":
+                        result_text = self._handle_request_secret(tc.input)
+                    elif tc.name == "scratchpad":
+                        result_text = await self._handle_scratchpad(tc.input)
+                        if tc.input.get("action") == "dump":
+                            yield StreamToolResult(content=result_text)
+                            result_text = (
+                                "The full notebook has been displayed to the user above. "
+                                "Do not repeat it. Here is the content for your reference:\n\n"
+                                + result_text
+                            )
+                    elif tc.name == "minds":
+                        result_text = await self._handle_minds(tc.input)
+                    else:
+                        result_text = f"Unknown tool: {tc.name}"
+                except Exception as exc:
+                    result_text = f"Tool '{tc.name}' failed: {exc}"
 
                 # Track consecutive errors per tool
                 is_error = any(
