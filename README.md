@@ -85,23 +85,9 @@ You can always ask Anton to explain what it did. Ask it to dump its scratchpad a
 
 ## Workspace
 
-When you run `anton` in a directory, it checks for an `anton.md` file. If the folder has existing files but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
+When you run `anton` in a directory, it checks for an `.anto` folder. If the folder exists but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
 
-Once initialized, the workspace looks like:
-
-```
-project/
-├── anton.md              # Project context (read every conversation)
-└── .anton/
-    ├── .env              # Secrets (API keys, tokens — never pass through LLM)
-    ├── context/          # Self-awareness files (project facts, conventions)
-    ├── skills/           # User and auto-generated skills
-    ├── sessions/         # Task transcripts and summaries
-    ├── learnings/        # Extracted insights
-    └── minions/          # One folder per minion (<id>/status.json, artifacts) WIP
-```
-
-**anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
+**.anton/anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
 
 **Secret vault** — When Anton needs an API key or token, it asks you directly and stores the value in `.anton/.env`. The secret never passes through the LLM — Anton just gets told "the variable is set."
 
