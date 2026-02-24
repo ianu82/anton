@@ -127,7 +127,8 @@ class Scratchpad:
         import subprocess as _sp
 
         if sys.platform == "win32":
-            self._venv_dir = str(Path("~/.anton/scratchpad-venv").expanduser())
+            base = Path("~/.anton/scratchpad-venvs").expanduser()
+            self._venv_dir = str(base / self.name)
             os.makedirs(self._venv_dir, exist_ok=True)
         else:
             self._venv_dir = tempfile.mkdtemp(prefix="anton_venv_")
@@ -145,10 +146,12 @@ class Scratchpad:
         else:
             venv.create(self._venv_dir, system_site_packages=True, with_pip=False, clear=True)
 
-        bin_dir = os.path.join(self._venv_dir, "bin")
         if sys.platform == "win32":
             bin_dir = os.path.join(self._venv_dir, "Scripts")
-        self._venv_python = os.path.join(bin_dir, "python")
+            self._venv_python = os.path.join(bin_dir, "python.exe")
+        else:
+            bin_dir = os.path.join(self._venv_dir, "bin")
+            self._venv_python = os.path.join(bin_dir, "python")
 
     def _verify_venv_python(self) -> bool:
         """Check that the venv Python binary exists and can execute."""
