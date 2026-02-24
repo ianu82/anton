@@ -37,6 +37,7 @@ from anton.tools import (
     dispatch_tool,
     format_cell_result,
     prepare_scratchpad_exec,
+    prompt_secret,
 )
 
 if TYPE_CHECKING:
@@ -94,9 +95,7 @@ class ChatSession:
             # If already stored, return it without prompting
             if self._workspace.has_secret(var_name):
                 return os.environ.get(var_name) or self._workspace.get_secret(var_name)
-            self._console.print()
-            value = self._console.input(f"[bold]{prompt_text}:[/] ")
-            value = value.strip()
+            value = prompt_secret(self._console, var_name, prompt_text)
             if not value:
                 return None
             self._workspace.set_secret(var_name, value)

@@ -181,7 +181,7 @@ class TestRequestSecretTool:
         assert "variable_name" in props
         assert "prompt_text" in props
 
-    async def test_request_secret_stores_value(self, sa, ws):
+    async def test_request_secret_stores_value(self, sa, ws, monkeypatch):
         """request_secret stores the value and returns confirmation."""
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(
@@ -195,9 +195,12 @@ class TestRequestSecretTool:
             ]
         )
 
-        # Mock console.input to simulate user entering a secret
+        # Mock the password input to simulate user entering a secret
         mock_console = MagicMock()
-        mock_console.input = MagicMock(return_value="ghp_testtoken123")
+        monkeypatch.setattr(
+            "anton.tools._password_input",
+            lambda prompt_label: "ghp_testtoken123",
+        )
 
         session = ChatSession(
             mock_llm,

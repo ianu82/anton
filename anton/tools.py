@@ -217,6 +217,26 @@ def handle_update_context(session: ChatSession, tc_input: dict) -> str:
     return "Context updated: " + "; ".join(actions)
 
 
+def _password_input(prompt_label: str) -> str:
+    """Read a password with masked input (asterisks). Separated for testability."""
+    from prompt_toolkit import prompt as pt_prompt
+    return pt_prompt(prompt_label, is_password=True)
+
+
+def prompt_secret(console, var_name: str, prompt_text: str) -> str:
+    """Prompt the user for a secret with masked input and context.
+
+    Shows a contextual banner and masks keystrokes with asterisks.
+    Returns the stripped value (may be empty).
+    """
+    console.print()
+    console.print(f"[bold]Secret requested:[/] [anton.cyan]{var_name}[/]")
+    console.print(f"[anton.muted]  {prompt_text}[/]")
+    console.print(f"[anton.muted]  Value will be stored in .anton/.env and never shown to the AI.[/]")
+    value = _password_input(f"  {var_name}> ")
+    return value.strip()
+
+
 def handle_request_secret(session: ChatSession, tc_input: dict) -> str:
     """Handle a request_secret tool call.
 
@@ -237,9 +257,7 @@ def handle_request_secret(session: ChatSession, tc_input: dict) -> str:
         return f"Variable {var_name} is already set in .anton/.env."
 
     # Ask user directly — this bypasses the LLM entirely
-    session._console.print()
-    value = session._console.input(f"[bold]{prompt_text}:[/] ")
-    value = value.strip()
+    value = prompt_secret(session._console, var_name, prompt_text)
 
     if not value:
         return f"No value provided for {var_name}. Variable not set."
