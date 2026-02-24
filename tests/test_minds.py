@@ -1,4 +1,4 @@
-"""Unit tests for MindsClient and SyncMindsClient (anton/minds.py)."""
+"""Unit tests for MindsClient, Mind, and MindResponse (anton/minds.py)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from anton.minds import MindsClient, SyncMindsClient
+from anton.minds import MindsClient, Mind, MindResponse
 
 
 class TestMindsClientAuth:
@@ -400,54 +400,279 @@ class TestMindsClientCatalogWithMind:
         assert "mind" not in params
 
 
-class TestSyncMindsClient:
-    def test_sync_client_initializes_inner_client(self):
-        client = SyncMindsClient(api_key="test-key", base_url="https://custom.example.com")
-        assert client._client.api_key == "test-key"
-        assert client._client.base_url == "https://custom.example.com"
+class TestMind:
+    def test_mind_reads_env_vars(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123", "MINDS_BASE_URL": "https://custom.example.com"}):
+            mind = Mind("sales")
+        assert mind.name == "sales"
+        assert mind._api_key == "key-123"
+        assert mind._base_url == "https://custom.example.com"
 
-    def test_sync_ask_wraps_async(self):
-        client = SyncMindsClient(api_key="test-key")
-        with patch.object(
-            client._client, "ask", new_callable=AsyncMock, return_value="Answer text"
-        ) as mock_ask:
-            result = client.ask("question?", "my_mind")
-        mock_ask.assert_awaited_once_with("question?", "my_mind", None)
-        assert result == "Answer text"
+    def test_mind_default_base_url(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}, clear=False):
+            # Remove MINDS_BASE_URL if present
+            import os
+            env = os.environ.copy()
+            env.pop("MINDS_BASE_URL", None)
+            env["MINDS_API_KEY"] = "key-123"
+            with patch.dict("os.environ", env, clear=True):
+                mind = Mind("sales")
+            assert mind._base_url == "https://mdb.ai"
 
-    def test_sync_data_wraps_async(self):
-        client = SyncMindsClient(api_key="test-key")
-        with patch.object(
-            client._client, "data", new_callable=AsyncMock, return_value="| a |\n| --- |"
-        ) as mock_data:
-            result = client.data(limit=50, offset=10)
-        mock_data.assert_awaited_once_with(limit=50, offset=10)
-        assert "| a |" in result
+    def test_mind_raises_without_api_key(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(ValueError, match="MINDS_API_KEY"):
+                Mind("sales")
 
-    def test_sync_export_wraps_async(self):
-        client = SyncMindsClient(api_key="test-key")
-        with patch.object(
-            client._client, "export", new_callable=AsyncMock, return_value="a,b\n1,2\n"
-        ) as mock_export:
-            result = client.export()
-        mock_export.assert_awaited_once()
-        assert result == "a,b\n1,2\n"
+    def test_mind_tracks_conversation_id(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+        assert mind._conversation_id is None
+        mind._conversation_id = "conv_123"
+        assert mind._conversation_id == "conv_123"
 
-    def test_sync_catalog_wraps_async(self):
-        client = SyncMindsClient(api_key="test-key")
-        with patch.object(
-            client._client, "catalog", new_callable=AsyncMock, return_value="## users"
-        ) as mock_catalog:
-            result = client.catalog("my_db")
-        mock_catalog.assert_awaited_once_with("my_db", mind=None)
-        assert result == "## users"
+    def test_ask_opens_streaming_request(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
 
-    def test_sync_get_mind_wraps_async(self):
-        client = SyncMindsClient(api_key="test-key")
-        mind_data = {"name": "sales", "datasources": ["db1"]}
-        with patch.object(
-            client._client, "get_mind", new_callable=AsyncMock, return_value=mind_data
-        ) as mock_get:
-            result = client.get_mind("sales")
-        mock_get.assert_awaited_once_with("sales")
-        assert result == mind_data
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send.return_value = mock_response
+
+        with patch("httpx.Client", return_value=mock_client):
+            result = mind.ask("top customers?")
+
+        assert isinstance(result, MindResponse)
+        mock_client.send.assert_called_once()
+        call_kwargs = mock_client.send.call_args
+        assert call_kwargs[1]["stream"] is True
+
+    def test_ask_sends_conversation_id_when_set(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+            mind._conversation_id = "conv_456"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send.return_value = mock_response
+
+        with patch("httpx.Client", return_value=mock_client):
+            mind.ask("follow up?")
+
+        build_args = mock_client.build_request.call_args
+        payload = build_args[1]["json"]
+        assert payload["conversation_id"] == "conv_456"
+
+    def test_ask_closes_client_on_http_error(self):
+        import httpx
+
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "401", request=MagicMock(), response=MagicMock(status_code=401),
+        )
+
+        mock_client = MagicMock()
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send.return_value = mock_response
+
+        with patch("httpx.Client", return_value=mock_client):
+            with pytest.raises(httpx.HTTPStatusError):
+                mind.ask("test")
+
+        mock_client.close.assert_called_once()
+
+
+class TestMindResponse:
+    def _make_response(self, lines, mind=None):
+        """Helper to create a MindResponse with mock SSE lines."""
+        if mind is None:
+            with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+                mind = Mind("test")
+
+        mock_http_response = MagicMock()
+        mock_http_response.iter_lines.return_value = iter(lines)
+        mock_http_response.close = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.close = MagicMock()
+
+        return MindResponse(client=mock_client, response=mock_http_response, mind=mind)
+
+    def test_iteration_yields_deltas(self):
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "Hello"}',
+            'data: {"type": "response.output_text.delta", "delta": " world"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines)
+        chunks = list(resp)
+        assert chunks == ["Hello", " world"]
+
+    def test_text_accumulates(self):
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "Hello"}',
+            'data: {"type": "response.output_text.delta", "delta": " world"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines)
+        list(resp)  # drain
+        assert resp.text == "Hello world"
+
+    def test_completed_flag_set(self):
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "Hi"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines)
+        list(resp)
+        assert resp.completed is True
+
+    def test_ids_extracted_from_completed(self):
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "conv_99", "id": "msg_42"}}',
+        ]
+        resp = self._make_response(lines)
+        list(resp)
+        assert resp.conversation_id == "conv_99"
+        assert resp.message_id == "msg_42"
+
+    def test_completed_updates_parent_mind_conversation_id(self):
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+        assert mind._conversation_id is None
+
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "conv_new", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)
+        assert mind._conversation_id == "conv_new"
+
+    def test_skips_non_data_lines(self):
+        lines = [
+            "event: ping",
+            "",
+            'data: {"type": "response.output_text.delta", "delta": "OK"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines)
+        chunks = list(resp)
+        assert chunks == ["OK"]
+
+    def test_skips_done_marker(self):
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "Hi"}',
+            "data: [DONE]",
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines)
+        chunks = list(resp)
+        assert chunks == ["Hi"]
+
+    def test_get_data_no_limit_calls_export(self):
+        """get_data() with no limit should GET the export endpoint."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)  # drain
+
+        csv_text = "name,revenue\nAcme,1000\n"
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.text = csv_text
+
+        mock_data_client = MagicMock()
+        mock_data_client.get.return_value = mock_get_response
+        mock_data_client.__enter__ = MagicMock(return_value=mock_data_client)
+        mock_data_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_data_client):
+            result = resp.get_data()
+
+        assert result == csv_text
+        call_args = mock_data_client.get.call_args
+        assert "/export" in call_args[0][0]
+
+    def test_get_data_with_limit_calls_result(self):
+        """get_data(limit=N) should GET the result endpoint."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)  # drain
+
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.json.return_value = {"column_names": ["x"], "data": [[1]]}
+
+        mock_data_client = MagicMock()
+        mock_data_client.get.return_value = mock_get_response
+        mock_data_client.__enter__ = MagicMock(return_value=mock_data_client)
+        mock_data_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_data_client):
+            result = resp.get_data(limit=100)
+
+        assert "| x |" in result
+        call_args = mock_data_client.get.call_args
+        assert "/result" in call_args[0][0]
+        assert call_args[1]["params"]["limit"] == 100
+
+    def test_get_data_auto_drains_stream(self):
+        """get_data() should auto-drain the stream if not yet iterated."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "Hi"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        # NOT calling list(resp) — get_data should auto-drain
+
+        csv_text = "a,b\n1,2\n"
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.text = csv_text
+
+        mock_data_client = MagicMock()
+        mock_data_client.get.return_value = mock_get_response
+        mock_data_client.__enter__ = MagicMock(return_value=mock_data_client)
+        mock_data_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_data_client):
+            result = resp.get_data()
+
+        assert result == csv_text
+        assert resp.text == "Hi"  # was accumulated during auto-drain
+
+    def test_get_data_raises_if_not_completed(self):
+        """get_data() should raise RuntimeError if stream didn't complete."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        # No completed event
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "partial"}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)  # drain without completed event
+
+        with pytest.raises(RuntimeError, match="did not complete"):
+            resp.get_data()

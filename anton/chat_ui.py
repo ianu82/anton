@@ -100,6 +100,7 @@ PHASE_LABELS = {
     "executing": "Executing",
     "complete": "Complete",
     "failed": "Failed",
+    "scratchpad": "Scratchpad",
 }
 
 
@@ -196,10 +197,11 @@ class StreamDisplay:
         if self._live is None:
             return
 
-        # For minds streaming, show progress on the activity line itself
-        if phase == "minds" and self._activities:
+        # For minds/scratchpad streaming, show progress on the activity line itself
+        if phase in ("minds", "scratchpad") and self._activities:
+            target_name = phase if phase == "minds" else "scratchpad"
             for act in reversed(self._activities):
-                if act.name == "minds":
+                if act.name == target_name:
                     act.current_progress = message
                     break
             self._refresh_live()

@@ -112,16 +112,19 @@ SCRATCHPAD_TOOL = {
         "runs a tool-call loop where the LLM reasons and calls your tools iteratively. "
         "handle_tool(name, inputs) -> str is a plain sync function.\n"
         "All .anton/.env secrets are available as environment variables (os.environ).\n"
-        "get_minds() returns a pre-configured Minds client (sync) for natural language "
-        "database queries. Call minds.ask(question, mind) to query, then minds.export() "
-        "to get CSV data — perfect for pd.read_csv(io.StringIO(csv)). Also: minds.data() "
-        "for markdown tables, minds.catalog(datasource) to discover tables.\n\n"
-        "IMPORTANT: Each cell has a maximum execution time of 120 seconds. If a cell "
-        "exceeds this limit the process is killed and all state is lost. You MUST provide "
-        "an estimated_execution_time_seconds for every exec call. If your estimate exceeds "
-        "90 seconds, break the work into smaller cells. For long-running operations "
-        "(large downloads, heavy computation), split into incremental steps that each "
-        "complete well within the limit."
+        "Mind('name') creates a streaming database query interface — this is the ONLY "
+        "way to query connected databases. response = Mind('sales').ask('question') "
+        "returns a MindResponse you can iterate for streaming text. After iteration: "
+        "response.get_data() returns full CSV, response.get_data(limit=N) returns "
+        "paginated markdown. Conversation tracked automatically for follow-ups.\n\n"
+        "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
+        "no output and no progress() calls for 30s, it is killed and all state is lost. "
+        "For long-running code (API calls, data extraction, heavy computation), call "
+        "progress(message) periodically to signal work is ongoing and reset the timer. "
+        "The total timeout scales from your estimated_execution_time_seconds "
+        "(roughly 2x the estimate). You MUST provide estimated_execution_time_seconds "
+        "for every exec call. For very long operations, provide a realistic estimate "
+        "and use progress() to keep the cell alive."
     ),
     "input_schema": {
         "type": "object",
@@ -145,57 +148,10 @@ SCRATCHPAD_TOOL = {
             },
             "estimated_execution_time_seconds": {
                 "type": "integer",
-                "description": "Estimated execution time in seconds. Must be under 90. If you estimate more, break the work into smaller cells.",
+                "description": "Estimated execution time in seconds. Drives the total timeout (roughly 2x estimate). Use progress() for long cells.",
             },
         },
         "required": ["action", "name"],
-    },
-}
-
-
-MINDS_TOOL = {
-    "name": "minds",
-    "description": (
-        "Query databases using natural language via MindsDB. "
-        "Minds translates your questions into SQL — you never write SQL directly. "
-        "Data stays in MindsDB, only results come back.\n\n"
-        "Actions:\n"
-        "- ask: Ask a natural language question. Returns a text answer.\n"
-        "- data: Fetch raw tabular results from the last ask (as a markdown table). "
-        "Call this after ask when you need the actual data for analysis.\n"
-        "- export: Export the full result set from the last ask as CSV. "
-        "Perfect for loading into pandas with pd.read_csv(io.StringIO(csv)).\n"
-        "- catalog: Discover available tables and columns for a datasource."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["ask", "data", "export", "catalog"],
-            },
-            "mind": {
-                "type": "string",
-                "description": "The mind (model) name to query. Required for 'ask'.",
-            },
-            "question": {
-                "type": "string",
-                "description": "Natural language question. Required for 'ask'.",
-            },
-            "datasource": {
-                "type": "string",
-                "description": "Datasource name. Required for 'catalog'.",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max rows to return (default 100). For 'data' only.",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "Row offset for pagination (default 0). For 'data' only.",
-            },
-        },
-        "required": ["action"],
     },
 }
 
@@ -343,15 +299,6 @@ class ChatSession:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:
             tools.append(REQUEST_SECRET_TOOL)
-        if self._minds is not None:
-            minds_tool = dict(MINDS_TOOL)
-            default_mind = os.environ.get("MINDS_DEFAULT_MIND", "")
-            if default_mind:
-                minds_tool["description"] = (
-                    MINDS_TOOL["description"]
-                    + f"\n\nDefault mind: {default_mind} (used when no mind is specified)."
-                )
-            tools.append(minds_tool)
         return tools
 
     def _handle_update_context(self, tc_input: dict) -> str:
@@ -405,6 +352,54 @@ class ChatSession:
         self._workspace.set_secret(var_name, value)
         return f"Variable {var_name} has been set in .anton/.env. You can now use it."
 
+    async def _prepare_scratchpad_exec(self, tc_input: dict):
+        """Validate and prepare a scratchpad exec call.
+
+        Returns (pad, code, description, estimated_time, estimated_seconds) or
+        a str error message if validation fails.
+        """
+        name = tc_input.get("name", "")
+        code = tc_input.get("code", "")
+        if not code or not code.strip():
+            return "No code provided."
+
+        pad = await self._scratchpads.get_or_create(name)
+
+        # Auto-install packages before running the cell
+        packages = tc_input.get("packages", [])
+        if packages:
+            install_result = await pad.install_packages(packages)
+            if "Install failed" in install_result or "timed out" in install_result:
+                return install_result
+
+        description = tc_input.get("one_line_description", "")
+        estimated_seconds = tc_input.get("estimated_execution_time_seconds", 0)
+        if isinstance(estimated_seconds, str):
+            try:
+                estimated_seconds = int(estimated_seconds)
+            except ValueError:
+                estimated_seconds = 0
+
+        estimated_time = f"{estimated_seconds}s" if estimated_seconds > 0 else ""
+        return pad, code, description, estimated_time, estimated_seconds
+
+    @staticmethod
+    def _format_cell_result(cell) -> str:
+        """Format a Cell into a tool result string."""
+        parts: list[str] = []
+        if cell.stdout:
+            stdout = cell.stdout
+            if len(stdout) > 10_000:
+                stdout = stdout[:10_000] + f"\n\n... (truncated, {len(stdout)} chars total)"
+            parts.append(stdout)
+        if cell.stderr:
+            parts.append(f"[stderr]\n{cell.stderr}")
+        if cell.error:
+            parts.append(f"[error]\n{cell.error}")
+        if not parts:
+            return "Code executed successfully (no output)."
+        return "\n".join(parts)
+
     async def _handle_scratchpad(self, tc_input: dict) -> str:
         """Dispatch a scratchpad tool call by action."""
         action = tc_input.get("action", "")
@@ -414,49 +409,18 @@ class ChatSession:
             return "Scratchpad name is required."
 
         if action == "exec":
-            code = tc_input.get("code", "")
-            if not code or not code.strip():
-                return "No code provided."
-            pad = await self._scratchpads.get_or_create(name)
+            result = await self._prepare_scratchpad_exec(tc_input)
+            if isinstance(result, str):
+                return result
+            pad, code, description, estimated_time, estimated_seconds = result
 
-            # Auto-install packages before running the cell
-            packages = tc_input.get("packages", [])
-            if packages:
-                install_result = await pad.install_packages(packages)
-                if "Install failed" in install_result or "timed out" in install_result:
-                    return install_result
-
-            description = tc_input.get("one_line_description", "")
-            estimated_seconds = tc_input.get("estimated_execution_time_seconds", 0)
-            if isinstance(estimated_seconds, str):
-                try:
-                    estimated_seconds = int(estimated_seconds)
-                except ValueError:
-                    estimated_seconds = 0
-
-            if estimated_seconds > 90:
-                return (
-                    f"Rejected: estimated execution time ({estimated_seconds}s) exceeds the 90s safety limit. "
-                    f"The cell timeout is 120s and exceeding it kills the process and loses all state. "
-                    f"Break this work into smaller cells that each complete within 90 seconds."
-                )
-
-            estimated_time = f"{estimated_seconds}s" if estimated_seconds > 0 else ""
-            cell = await pad.execute(code, description=description, estimated_time=estimated_time)
-
-            parts: list[str] = []
-            if cell.stdout:
-                stdout = cell.stdout
-                if len(stdout) > 10_000:
-                    stdout = stdout[:10_000] + f"\n\n... (truncated, {len(stdout)} chars total)"
-                parts.append(stdout)
-            if cell.stderr:
-                parts.append(f"[stderr]\n{cell.stderr}")
-            if cell.error:
-                parts.append(f"[error]\n{cell.error}")
-            if not parts:
-                return "Code executed successfully (no output)."
-            return "\n".join(parts)
+            cell = await pad.execute(
+                code,
+                description=description,
+                estimated_time=estimated_time,
+                estimated_seconds=estimated_seconds,
+            )
+            return self._format_cell_result(cell)
 
         elif action == "view":
             pad = self._scratchpads._pads.get(name)
@@ -489,48 +453,6 @@ class ChatSession:
 
         else:
             return f"Unknown scratchpad action: {action}"
-
-    async def _handle_minds(self, tc_input: dict) -> str:
-        """Dispatch a minds tool call by action."""
-        if self._minds is None:
-            return "Minds is not configured. Use /minds to set up."
-
-        action = tc_input.get("action", "")
-
-        try:
-            if action == "ask":
-                question = tc_input.get("question", "")
-                if not question:
-                    return "A 'question' is required for the ask action."
-                mind = tc_input.get("mind", "") or os.environ.get("MINDS_DEFAULT_MIND", "")
-                if not mind:
-                    return (
-                        "A 'mind' name is required. Specify it in the tool call "
-                        "or set a default via /minds."
-                    )
-                return await self._minds.ask(question, mind)
-
-            elif action == "data":
-                limit = tc_input.get("limit", 100)
-                offset = tc_input.get("offset", 0)
-                return await self._minds.data(limit=limit, offset=offset)
-
-            elif action == "export":
-                return await self._minds.export()
-
-            elif action == "catalog":
-                datasource = tc_input.get("datasource", "")
-                if not datasource:
-                    return "A 'datasource' name is required for the catalog action."
-                return await self._minds.catalog(datasource)
-
-            else:
-                return f"Unknown minds action: {action}"
-
-        except ValueError as exc:
-            return str(exc)
-        except Exception as exc:
-            return f"Minds error: {exc}"
 
     async def _handle_minds_connect(self, mind_name: str, console: Console) -> None:
         """Connect a mind: fetch schema, summarize with LLM, store knowledge file."""
@@ -737,8 +659,6 @@ class ChatSession:
                         result_text = self._handle_request_secret(tc.input)
                     elif tc.name == "scratchpad":
                         result_text = await self._handle_scratchpad(tc.input)
-                    elif tc.name == "minds":
-                        result_text = await self._handle_minds(tc.input)
                     else:
                         result_text = f"Unknown tool: {tc.name}"
                 except Exception as exc:
@@ -863,37 +783,37 @@ class ChatSession:
                     elif tc.name == "request_secret":
                         result_text = self._handle_request_secret(tc.input)
                     elif tc.name == "scratchpad":
-                        result_text = await self._handle_scratchpad(tc.input)
-                        if tc.input.get("action") == "dump":
-                            yield StreamToolResult(content=result_text)
-                            result_text = (
-                                "The full notebook has been displayed to the user above. "
-                                "Do not repeat it. Here is the content for your reference:\n\n"
-                                + result_text
-                            )
-                    elif tc.name == "minds":
-                        if tc.input.get("action") == "ask" and self._minds is not None:
-                            question = tc.input.get("question", "")
-                            mind = tc.input.get("mind", "") or os.environ.get("MINDS_DEFAULT_MIND", "")
-                            if not question:
-                                result_text = "A 'question' is required for the ask action."
-                            elif not mind:
-                                result_text = (
-                                    "A 'mind' name is required. Specify it in the tool call "
-                                    "or set a default via /minds."
-                                )
+                        if tc.input.get("action") == "exec":
+                            # Inline streaming exec — yields progress events
+                            prep = await self._prepare_scratchpad_exec(tc.input)
+                            if isinstance(prep, str):
+                                result_text = prep
                             else:
-                                accumulated: list[str] = []
-                                try:
-                                    async for delta in self._minds.ask_stream(question, mind):
-                                        accumulated.append(delta)
-                                        snippet = "".join(accumulated)[-60:]
-                                        yield StreamTaskProgress(phase="minds", message=snippet)
-                                    result_text = "".join(accumulated) or "No answer returned."
-                                except Exception as exc:
-                                    result_text = f"Minds error: {exc}"
+                                pad, code, description, estimated_time, estimated_seconds = prep
+                                from anton.scratchpad import Cell
+                                cell = None
+                                async for item in pad.execute_streaming(
+                                    code,
+                                    description=description,
+                                    estimated_time=estimated_time,
+                                    estimated_seconds=estimated_seconds,
+                                ):
+                                    if isinstance(item, str):
+                                        yield StreamTaskProgress(
+                                            phase="scratchpad", message=item
+                                        )
+                                    elif isinstance(item, Cell):
+                                        cell = item
+                                result_text = self._format_cell_result(cell) if cell else "No result produced."
                         else:
-                            result_text = await self._handle_minds(tc.input)
+                            result_text = await self._handle_scratchpad(tc.input)
+                            if tc.input.get("action") == "dump":
+                                yield StreamToolResult(content=result_text)
+                                result_text = (
+                                    "The full notebook has been displayed to the user above. "
+                                    "Do not repeat it. Here is the content for your reference:\n\n"
+                                    + result_text
+                                )
                     else:
                         result_text = f"Unknown tool: {tc.name}"
                 except Exception as exc:

@@ -12,9 +12,26 @@ import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_CELL_TIMEOUT = 120
+_CELL_TIMEOUT_DEFAULT = 120        # Default total timeout when no estimate given
+_CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before killing
 _INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
+_PROGRESS_MARKER = "__ANTON_PROGRESS__"
+
+
+def _compute_timeouts(estimated_seconds: int) -> tuple[float, float]:
+    """Compute (total_timeout, inactivity_timeout) from estimated execution time.
+
+    - If estimate is 0: use defaults (120s total, 30s inactivity).
+    - Otherwise: total = max(estimate * 2, estimate + 30) with no cap.
+      Inactivity = min(max(estimate * 0.5, 30), 60).
+    """
+    if estimated_seconds <= 0:
+        return float(_CELL_TIMEOUT_DEFAULT), float(_CELL_INACTIVITY_TIMEOUT)
+    total = max(estimated_seconds * 2, estimated_seconds + 30)
+    inactivity = min(max(estimated_seconds * 0.5, 30), 60)
+    return float(total), float(inactivity)
+
 
 _BOOT_SCRIPT = r'''
 import io
@@ -191,28 +208,26 @@ if _scratchpad_model:
     except Exception:
         pass  # LLM not available — not fatal (e.g. anthropic not installed)
 
-# --- Inject get_minds() for Minds/MindsDB access from scratchpad code ---
-_minds_api_key = os.environ.get("MINDS_API_KEY", "")
-if _minds_api_key:
+# --- Inject Mind class for Minds/MindsDB access from scratchpad code ---
+if os.environ.get("MINDS_API_KEY", ""):
     try:
-        from anton.minds import MindsClient as _MindsClient, SyncMindsClient as _SyncMindsClient
-
-        _minds_client = _SyncMindsClient(
-            api_key=_minds_api_key,
-            base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
-        )
-
-        def get_minds():
-            """Get a pre-configured Minds client for database queries."""
-            return _minds_client
-
-        namespace["get_minds"] = get_minds
+        from anton.minds import Mind
+        namespace["Mind"] = Mind
     except Exception:
         pass  # Minds not available — not fatal
 
 # Read-execute loop
 _real_stdout = sys.stdout
 _real_stdin = sys.stdin
+
+_PROGRESS_MARKER = "__ANTON_PROGRESS__"
+
+def progress(message=""):
+    """Signal that long-running work is still active. Resets the inactivity timer."""
+    _real_stdout.write(_PROGRESS_MARKER + " " + str(message) + "\n")
+    _real_stdout.flush()
+
+namespace["progress"] = progress
 
 while True:
     lines = []
@@ -475,11 +490,46 @@ class Scratchpad:
                 f"The Python venv has been deleted and will be recreated on next attempt."
             ) from exc
 
-    async def execute(self, code: str, *, description: str = "", estimated_time: str = "") -> Cell:
-        """Send code to the subprocess, read the JSON result, return a Cell."""
+    async def execute(
+        self,
+        code: str,
+        *,
+        description: str = "",
+        estimated_time: str = "",
+        estimated_seconds: int = 0,
+    ) -> Cell:
+        """Send code to the subprocess, read the JSON result, return a Cell.
+
+        Backward-compatible wrapper around execute_streaming() that drains
+        all events and returns just the final Cell.
+        """
+        async for item in self.execute_streaming(
+            code,
+            description=description,
+            estimated_time=estimated_time,
+            estimated_seconds=estimated_seconds,
+        ):
+            if isinstance(item, Cell):
+                return item
+        # Should not reach here, but just in case
+        return Cell(code=code, stdout="", stderr="", error="No result produced.")
+
+    async def execute_streaming(
+        self,
+        code: str,
+        *,
+        description: str = "",
+        estimated_time: str = "",
+        estimated_seconds: int = 0,
+    ):
+        """Async generator that sends code and yields progress strings and a final Cell.
+
+        Yields:
+            str — progress messages from progress() calls in the cell code
+            Cell — the final execution result (always the last item)
+        """
         if self._proc is None or self._proc.returncode is not None:
-            # Process died — auto-note
-            cell = Cell(
+            yield Cell(
                 code=code,
                 stdout="",
                 stderr="",
@@ -487,30 +537,41 @@ class Scratchpad:
                 description=description,
                 estimated_time=estimated_time,
             )
-            self.cells.append(cell)
-            return cell
+            return
 
         payload = code + "\n" + _CELL_DELIM + "\n"
         self._proc.stdin.write(payload.encode())  # type: ignore[union-attr]
         await self._proc.stdin.drain()  # type: ignore[union-attr]
 
+        total_timeout, inactivity_timeout = _compute_timeouts(estimated_seconds)
+
         try:
-            result_data = await asyncio.wait_for(
-                self._read_result(), timeout=_CELL_TIMEOUT
-            )
-        except asyncio.TimeoutError:
+            result_data: dict | None = None
+            async for item in self._read_result(
+                total_timeout=total_timeout,
+                inactivity_timeout=inactivity_timeout,
+            ):
+                if isinstance(item, str):
+                    yield item  # progress message
+                else:
+                    result_data = item
+        except asyncio.TimeoutError as exc:
             self._proc.kill()
             await self._proc.wait()
             cell = Cell(
                 code=code,
                 stdout="",
                 stderr="",
-                error=f"Cell timed out after {_CELL_TIMEOUT}s. Process killed — state lost. Use reset to restart.",
+                error=f"{exc}. Process killed — state lost. Use reset to restart.",
                 description=description,
                 estimated_time=estimated_time,
             )
             self.cells.append(cell)
-            return cell
+            yield cell
+            return
+
+        if result_data is None:
+            result_data = {"stdout": "", "stderr": "", "error": "Process exited unexpectedly."}
 
         cell = Cell(
             code=code,
@@ -521,18 +582,66 @@ class Scratchpad:
             estimated_time=estimated_time,
         )
         self.cells.append(cell)
-        return cell
+        yield cell
 
-    async def _read_result(self) -> dict:
-        """Read lines from stdout until we get the result delimiters."""
+    async def _read_result(
+        self,
+        *,
+        total_timeout: float = _CELL_TIMEOUT_DEFAULT,
+        inactivity_timeout: float = _CELL_INACTIVITY_TIMEOUT,
+    ):
+        """Async generator that reads lines from stdout until result delimiters.
+
+        Yields:
+            str — progress messages (lines starting with _PROGRESS_MARKER)
+            dict — the final JSON result (always the last item)
+
+        Raises asyncio.TimeoutError with a descriptive message.
+        """
+        import time as _time
+
         lines: list[str] = []
         in_result = False
+        start = _time.monotonic()
+
         while True:
-            raw = await self._proc.stdout.readline()  # type: ignore[union-attr]
+            elapsed = _time.monotonic() - start
+            remaining_total = total_timeout - elapsed
+            if remaining_total <= 0:
+                raise asyncio.TimeoutError(
+                    f"Cell timed out after {total_timeout:.0f}s total"
+                )
+
+            line_timeout = min(inactivity_timeout, remaining_total)
+            try:
+                raw = await asyncio.wait_for(
+                    self._proc.stdout.readline(),  # type: ignore[union-attr]
+                    timeout=line_timeout,
+                )
+            except asyncio.TimeoutError:
+                # Determine which timeout was hit
+                elapsed_now = _time.monotonic() - start
+                if elapsed_now >= total_timeout - 0.5:
+                    raise asyncio.TimeoutError(
+                        f"Cell timed out after {total_timeout:.0f}s total"
+                    ) from None
+                raise asyncio.TimeoutError(
+                    f"Cell killed after {inactivity_timeout:.0f}s of inactivity "
+                    f"(no output or progress() calls)"
+                ) from None
+
             if not raw:
-                # Process exited
-                return {"stdout": "", "stderr": "", "error": "Process exited unexpectedly."}
+                yield {"stdout": "", "stderr": "", "error": "Process exited unexpectedly."}
+                return
+
             line = raw.decode().rstrip("\n")
+
+            # Progress marker — yield to caller, don't store
+            if line.startswith(_PROGRESS_MARKER):
+                message = line[len(_PROGRESS_MARKER):].strip()
+                yield message
+                continue
+
             if line == _RESULT_START:
                 in_result = True
                 continue
@@ -540,7 +649,8 @@ class Scratchpad:
                 break
             if in_result:
                 lines.append(line)
-        return json.loads("\n".join(lines))
+
+        yield json.loads("\n".join(lines))
 
     def view(self) -> str:
         """Format all cells with their outputs."""

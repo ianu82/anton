@@ -110,13 +110,14 @@ class TestScratchpadReset:
 class TestScratchpadEdgeCases:
     async def test_timeout_kills_process(self, monkeypatch):
         """Long-running code triggers timeout."""
-        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT", 1)
+        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 1)
+        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 1)
         pad = Scratchpad(name="test")
         await pad.start()
         try:
             cell = await pad.execute("import time; time.sleep(60)")
             assert cell.error is not None
-            assert "timed out" in cell.error.lower()
+            assert "timed out" in cell.error.lower() or "inactivity" in cell.error.lower()
         finally:
             await pad.close()
 
@@ -564,3 +565,106 @@ class TestScratchpadInstall:
             assert cell.stdout.strip() == "ok"
         finally:
             await pad.close()
+
+
+class TestProgressAndTimeouts:
+    async def test_progress_function_available_in_namespace(self):
+        """progress() should be callable in scratchpad code."""
+        pad = Scratchpad(name="progress-ns")
+        await pad.start()
+        try:
+            cell = await pad.execute("print(callable(progress))")
+            assert cell.error is None
+            assert cell.stdout.strip() == "True"
+        finally:
+            await pad.close()
+
+    async def test_progress_resets_inactivity_timeout(self, monkeypatch):
+        """Code that calls progress() frequently should survive even with a short inactivity timeout."""
+        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 2)
+        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 10)
+        pad = Scratchpad(name="progress-keep-alive")
+        await pad.start()
+        try:
+            code = (
+                "import time\n"
+                "for i in range(3):\n"
+                "    progress(f'step {i}')\n"
+                "    time.sleep(1)\n"
+                "print('done')\n"
+            )
+            cell = await pad.execute(code)
+            assert cell.error is None
+            assert cell.stdout.strip() == "done"
+        finally:
+            await pad.close()
+
+    async def test_inactivity_timeout_kills_without_progress(self, monkeypatch):
+        """Code that sleeps without progress() calls should be killed by inactivity timeout."""
+        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 2)
+        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 60)
+        pad = Scratchpad(name="no-progress")
+        await pad.start()
+        try:
+            cell = await pad.execute("import time; time.sleep(30)")
+            assert cell.error is not None
+            assert "inactivity" in cell.error.lower()
+        finally:
+            await pad.close()
+
+    async def test_execute_streaming_yields_progress(self):
+        """execute_streaming() should yield progress strings and a final Cell."""
+        pad = Scratchpad(name="streaming")
+        await pad.start()
+        try:
+            code = (
+                "progress('hello')\n"
+                "progress('world')\n"
+                "print('result')\n"
+            )
+            items = []
+            async for item in pad.execute_streaming(code):
+                items.append(item)
+
+            # Should have at least 2 progress strings and 1 Cell
+            progress_items = [i for i in items if isinstance(i, str)]
+            cell_items = [i for i in items if isinstance(i, Cell)]
+            assert len(progress_items) >= 2
+            assert "hello" in progress_items[0]
+            assert "world" in progress_items[1]
+            assert len(cell_items) == 1
+            assert cell_items[0].stdout.strip() == "result"
+            assert cell_items[0].error is None
+        finally:
+            await pad.close()
+
+    async def test_compute_timeouts_no_estimate(self):
+        """No estimate should use defaults."""
+        from anton.scratchpad import _compute_timeouts
+        total, inactivity = _compute_timeouts(0)
+        assert total == 120.0
+        assert inactivity == 30.0
+
+    async def test_compute_timeouts_with_estimate(self):
+        """Estimate should scale total timeout with no cap."""
+        from anton.scratchpad import _compute_timeouts
+
+        # Small estimate: max(10*2, 10+30) = max(20, 40) = 40
+        total, inactivity = _compute_timeouts(10)
+        assert total == 40.0
+        assert inactivity == 30.0  # min(max(5, 30), 60) = 30
+
+        # Medium estimate: max(60*2, 60+30) = max(120, 90) = 120
+        total, inactivity = _compute_timeouts(60)
+        assert total == 120.0
+        assert inactivity == 30.0  # min(max(30, 30), 60) = 30
+
+        # Large estimate: max(300*2, 300+30) = max(600, 330) = 600
+        total, inactivity = _compute_timeouts(300)
+        assert total == 600.0
+        assert inactivity == 60.0  # min(max(150, 30), 60) = 60
+
+        # Very large estimate: no cap
+        total, inactivity = _compute_timeouts(1000)
+        assert total == 2000.0
+        assert inactivity == 60.0

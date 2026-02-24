@@ -89,20 +89,21 @@ not separate files.
 assignment. Think dark-mode dashboard, not Jupyter default.
 
 MINDS (data access via MindsDB):
-- When the minds tool is available, you can query databases using natural language.
+- Mind('name') creates a streaming interface to query databases using natural language.
 - Minds translates your questions into SQL — you never write SQL directly.
-- Use 'ask' to get text answers, then 'data' to get raw tabular results as markdown, \
-or 'export' to get CSV.
-- Use 'catalog' to discover what tables and columns are available before asking.
-- Typical workflow: catalog -> ask -> data/export -> scratchpad (analyze/visualize).
+- Workflow: mind = Mind('sales') → response = mind.ask('question') → iterate response \
+for streaming text → response.get_data() for full CSV or response.get_data(limit=N) \
+for paginated markdown tables.
+- Conversation is tracked automatically — subsequent mind.ask() calls continue the \
+same conversation for follow-up questions.
 - Data stays in MindsDB — only results come back. This is safe for production databases.
-- get_minds() is available inside scratchpads — query databases directly from code.
-- Typical scratchpad workflow: minds = get_minds() → minds.ask(question, mind) → \
-csv = minds.export() → df = pd.read_csv(io.StringIO(csv)) → analyze/plot.
-- minds.export() returns the full result set as CSV — use this when loading data \
-into pandas for analysis. Much cleaner than parsing markdown tables.
-- Prefer export() over data() when working in the scratchpad. data() returns \
-markdown (good for chat display), export() returns CSV (good for code).
+- Mind is available inside scratchpads — query databases directly from code.
+- Typical scratchpad workflow: mind = Mind('sales') → response = mind.ask(question) → \
+text = response.text → csv = response.get_data() → df = pd.read_csv(io.StringIO(csv)) → \
+analyze/plot.
+- response.get_data() returns the full result set as CSV — use this when loading data \
+into pandas for analysis. response.get_data(limit=N) returns markdown tables.
+- Prefer get_data() (CSV) over get_data(limit=N) (markdown) when working in the scratchpad.
 - When connected minds are listed below (in the "Connected Minds" section), use them \
 autonomously — match the user's question domain to the right mind without asking. \
 If multiple minds could answer, pick the most specific one.

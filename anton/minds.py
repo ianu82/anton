@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -295,37 +296,173 @@ class MindsClient:
         return "\n".join(lines)
 
 
-@dataclass
-class SyncMindsClient:
-    """Sync wrapper around MindsClient for use in scratchpad code."""
+class MindResponse:
+    """Streaming response from a Mind.ask() call.
 
-    api_key: str
-    base_url: str = "https://mdb.ai"
-    _client: MindsClient = field(init=False, repr=False)
+    Iterate to consume SSE text deltas. After iteration completes,
+    ``.text`` holds the full accumulated answer and ``.get_data()``
+    can fetch tabular results or CSV exports.
+    """
 
-    def __post_init__(self) -> None:
-        self._client = MindsClient(api_key=self.api_key, base_url=self.base_url)
+    def __init__(
+        self,
+        client,  # httpx.Client — owned, closed on drain
+        response,  # httpx.Response — streaming
+        mind: Mind,
+    ) -> None:
+        self._client = client
+        self._response = response
+        self._mind = mind
 
-    def ask(self, question: str, mind: str, conversation_id: str | None = None) -> str:
-        """Ask a natural language question (sync). Returns text answer."""
-        return asyncio.run(self._client.ask(question, mind, conversation_id))
+        self.text: str = ""
+        self.completed: bool = False
+        self.conversation_id: str | None = None
+        self.message_id: str | None = None
+        self._drained: bool = False
 
-    def data(self, limit: int = 100, offset: int = 0) -> str:
-        """Fetch raw tabular results as a markdown table (sync)."""
-        return asyncio.run(self._client.data(limit=limit, offset=offset))
+    def __iter__(self):
+        try:
+            yield from self._iter_deltas()
+        finally:
+            self._close()
 
-    def export(self) -> str:
-        """Export the full result set as CSV (sync)."""
-        return asyncio.run(self._client.export())
+    def _iter_deltas(self):
+        buf = ""
+        for line in self._response.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            raw = line[len("data:"):].strip()
+            if not raw or raw == "[DONE]":
+                continue
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            etype = event.get("type", "")
+            if etype == "response.output_text.delta":
+                delta = event.get("delta", "")
+                if delta:
+                    self.text += delta
+                    yield delta
+            elif etype == "response.completed":
+                resp_obj = event.get("response", {})
+                self.conversation_id = resp_obj.get("conversation_id")
+                self.message_id = resp_obj.get("id")
+                self.completed = True
+                # Update parent Mind for multi-turn
+                self._mind._conversation_id = self.conversation_id
+        self._drained = True
 
-    def list_minds(self) -> list[dict]:
-        """Fetch all minds available to the authenticated user (sync)."""
-        return asyncio.run(self._client.list_minds())
+    def _close(self) -> None:
+        try:
+            self._response.close()
+        except Exception:
+            pass
+        try:
+            self._client.close()
+        except Exception:
+            pass
+        self._drained = True
 
-    def get_mind(self, name: str) -> dict:
-        """Fetch metadata for a single mind (sync)."""
-        return asyncio.run(self._client.get_mind(name))
+    def _auto_drain(self) -> None:
+        """Consume the stream if not yet iterated."""
+        if self._drained:
+            return
+        for _ in self:
+            pass
 
-    def catalog(self, datasource: str, *, mind: str | None = None) -> str:
-        """Discover tables and columns for a datasource (sync)."""
-        return asyncio.run(self._client.catalog(datasource, mind=mind))
+    def get_data(self, *, limit: int | None = None, offset: int = 0) -> str:
+        """Fetch tabular results from this response.
+
+        - ``limit=None`` → GET ``/export`` → returns CSV string.
+        - ``limit=N`` → GET ``/result?limit=N&offset=M`` → returns markdown table.
+
+        Auto-drains the stream if not yet iterated.
+        Raises ``RuntimeError`` if the stream didn't complete successfully.
+        """
+        import httpx
+
+        self._auto_drain()
+        if not self.completed:
+            raise RuntimeError("Stream did not complete — cannot fetch data.")
+
+        headers = {
+            "Authorization": f"Bearer {self._mind._api_key}",
+            "Content-Type": "application/json",
+        }
+        base = (
+            f"/api/v1/conversations/{self.conversation_id}"
+            f"/items/{self.message_id}"
+        )
+
+        with httpx.Client(
+            base_url=self._mind._base_url, timeout=60, follow_redirects=True,
+        ) as client:
+            if limit is None:
+                resp = client.get(f"{base}/export", headers=headers)
+                resp.raise_for_status()
+                return resp.text
+            else:
+                params: dict = {"limit": limit}
+                if offset:
+                    params["offset"] = offset
+                resp = client.get(f"{base}/result", headers=headers, params=params)
+                resp.raise_for_status()
+                return MindsClient._format_table(resp.json())
+
+
+class Mind:
+    """Sync, streaming-first interface for querying a MindsDB mind.
+
+    Usage::
+
+        mind = Mind("sales")
+        response = mind.ask("top customers?")
+        for chunk in response:
+            print(chunk, end="")
+
+        csv = response.get_data()           # full CSV export
+        table = response.get_data(limit=100) # paginated markdown table
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._api_key = os.environ.get("MINDS_API_KEY", "")
+        self._base_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
+        if not self._api_key:
+            raise ValueError(
+                "MINDS_API_KEY environment variable is not set. "
+                "Configure it via /minds setup or set it in .anton/.env."
+            )
+        self._conversation_id: str | None = None
+
+    def ask(self, question: str) -> MindResponse:
+        """Ask a natural language question. Returns a streaming MindResponse."""
+        import httpx
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict = {
+            "input": question,
+            "model": self.name,
+            "stream": True,
+        }
+        if self._conversation_id:
+            payload["conversation_id"] = self._conversation_id
+
+        client = httpx.Client(
+            base_url=self._base_url, timeout=120, follow_redirects=True,
+        )
+        try:
+            request = client.build_request(
+                "POST", "/api/v1/responses", headers=headers, json=payload,
+            )
+            response = client.send(request, stream=True)
+            response.raise_for_status()
+        except Exception:
+            client.close()
+            raise
+
+        return MindResponse(client=client, response=response, mind=self)
