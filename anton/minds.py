@@ -375,6 +375,7 @@ class MindResponse:
         """Fetch tabular results from this response.
 
         - ``limit=None`` → GET ``/export`` → returns CSV string.
+          Falls back to ``/result`` (markdown table) if export fails.
         - ``limit=N`` → GET ``/result?limit=N&offset=M`` → returns markdown table.
 
         Auto-drains the stream if not yet iterated.
@@ -384,7 +385,10 @@ class MindResponse:
 
         self._auto_drain()
         if not self.completed:
-            raise RuntimeError("Stream did not complete — cannot fetch data.")
+            raise RuntimeError(
+                "Stream did not complete — cannot fetch data. "
+                "The mind's text answer is available in response.text"
+            )
 
         headers = {
             "Authorization": f"Bearer {self._mind._api_key}",
@@ -398,17 +402,39 @@ class MindResponse:
         with httpx.Client(
             base_url=self._mind._base_url, timeout=60, follow_redirects=True,
         ) as client:
-            if limit is None:
-                resp = client.get(f"{base}/export", headers=headers)
-                resp.raise_for_status()
-                return resp.text
-            else:
+            if limit is not None:
                 params: dict = {"limit": limit}
                 if offset:
                     params["offset"] = offset
                 resp = client.get(f"{base}/result", headers=headers, params=params)
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"get_data(limit={limit}) failed (HTTP {resp.status_code}): "
+                        f"{resp.text[:500]}\n"
+                        f"The mind's text answer is available in response.text"
+                    )
                 return MindsClient._format_table(resp.json())
+
+            # No limit → try export first, fall back to result
+            resp = client.get(f"{base}/export", headers=headers)
+            if resp.status_code < 400:
+                return resp.text
+
+            # Export failed — fall back to result endpoint (markdown table)
+            fallback = client.get(
+                f"{base}/result", headers=headers, params={"limit": 500},
+            )
+            if fallback.status_code < 400:
+                return MindsClient._format_table(fallback.json())
+
+            # Both failed
+            raise RuntimeError(
+                f"get_data() export failed (HTTP {resp.status_code}): "
+                f"{resp.text[:500]}\n"
+                f"get_data(limit=N) also failed (HTTP {fallback.status_code}): "
+                f"{fallback.text[:500]}\n"
+                f"The mind's text answer is available in response.text"
+            )
 
 
 class Mind:

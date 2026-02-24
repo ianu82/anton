@@ -275,6 +275,20 @@ if _minds_api_key:
             for _ in self:
                 pass
 
+        @staticmethod
+        def _format_table(data):
+            columns = data.get("column_names", [])
+            rows = data.get("data", [])
+            if not columns:
+                return "No data returned."
+            header = "| " + " | ".join(columns) + " |"
+            sep = "| " + " | ".join("---" for _ in columns) + " |"
+            lines = [header, sep]
+            for row in rows:
+                cells = [str(c) if c is not None else "" for c in row]
+                lines.append("| " + " | ".join(cells) + " |")
+            return "\n".join(lines)
+
         def get_data(self, *, limit=None, offset=0):
             """Fetch tabular results from this response.
 
@@ -282,12 +296,16 @@ if _minds_api_key:
             limit=N  → paginated markdown table (N rows, optional offset).
 
             Auto-drains the stream if you haven't iterated yet.
+            If export fails, automatically falls back to result endpoint.
             """
             import httpx
 
             self._auto_drain()
             if not self.completed:
-                raise RuntimeError("Stream did not complete — cannot fetch data.")
+                raise RuntimeError(
+                    "Stream did not complete — cannot fetch data. "
+                    "The mind's text answer is available in response.text"
+                )
 
             headers = {
                 "Authorization": f"Bearer {self._mind._api_key}",
@@ -301,29 +319,39 @@ if _minds_api_key:
             with httpx.Client(
                 base_url=self._mind._base_url, timeout=60, follow_redirects=True,
             ) as client:
-                if limit is None:
-                    resp = client.get(f"{base}/export", headers=headers)
-                    resp.raise_for_status()
-                    return resp.text
-                else:
+                if limit is not None:
                     params = {"limit": limit}
                     if offset:
                         params["offset"] = offset
                     resp = client.get(f"{base}/result", headers=headers, params=params)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    # Format as markdown table
-                    columns = data.get("column_names", [])
-                    rows = data.get("data", [])
-                    if not columns:
-                        return "No data returned."
-                    header = "| " + " | ".join(columns) + " |"
-                    sep = "| " + " | ".join("---" for _ in columns) + " |"
-                    lines = [header, sep]
-                    for row in rows:
-                        cells = [str(c) if c is not None else "" for c in row]
-                        lines.append("| " + " | ".join(cells) + " |")
-                    return "\n".join(lines)
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"get_data(limit={limit}) failed (HTTP {resp.status_code}): "
+                            f"{resp.text[:500]}\n"
+                            f"The mind's text answer is available in response.text"
+                        )
+                    return self._format_table(resp.json())
+
+                # No limit → try export first, fall back to result
+                resp = client.get(f"{base}/export", headers=headers)
+                if resp.status_code < 400:
+                    return resp.text
+
+                # Export failed — fall back to result endpoint (markdown table)
+                fallback = client.get(
+                    f"{base}/result", headers=headers, params={"limit": 500},
+                )
+                if fallback.status_code < 400:
+                    return self._format_table(fallback.json())
+
+                # Both failed
+                raise RuntimeError(
+                    f"get_data() export failed (HTTP {resp.status_code}): "
+                    f"{resp.text[:500]}\n"
+                    f"get_data(limit=N) also failed (HTTP {fallback.status_code}): "
+                    f"{fallback.text[:500]}\n"
+                    f"The mind's text answer is available in response.text"
+                )
 
     class Mind:
         """Streaming interface to query databases via MindsDB minds.

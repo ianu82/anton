@@ -591,7 +591,7 @@ class TestMindResponse:
 
         csv_text = "name,revenue\nAcme,1000\n"
         mock_get_response = MagicMock()
-        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.status_code = 200
         mock_get_response.text = csv_text
 
         mock_data_client = MagicMock()
@@ -603,8 +603,9 @@ class TestMindResponse:
             result = resp.get_data()
 
         assert result == csv_text
-        call_args = mock_data_client.get.call_args
-        assert "/export" in call_args[0][0]
+        # First call should be to export
+        first_call = mock_data_client.get.call_args_list[0]
+        assert "/export" in first_call[0][0]
 
     def test_get_data_with_limit_calls_result(self):
         """get_data(limit=N) should GET the result endpoint."""
@@ -618,7 +619,7 @@ class TestMindResponse:
         list(resp)  # drain
 
         mock_get_response = MagicMock()
-        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.status_code = 200
         mock_get_response.json.return_value = {"column_names": ["x"], "data": [[1]]}
 
         mock_data_client = MagicMock()
@@ -634,6 +635,42 @@ class TestMindResponse:
         assert "/result" in call_args[0][0]
         assert call_args[1]["params"]["limit"] == 100
 
+    def test_get_data_export_falls_back_to_result(self):
+        """get_data() should fall back to /result when /export returns 422."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)
+
+        # Export returns 422
+        mock_export_resp = MagicMock()
+        mock_export_resp.status_code = 422
+        mock_export_resp.text = "Unprocessable Entity"
+
+        # Result returns 200
+        mock_result_resp = MagicMock()
+        mock_result_resp.status_code = 200
+        mock_result_resp.json.return_value = {"column_names": ["name"], "data": [["Acme"]]}
+
+        mock_data_client = MagicMock()
+        mock_data_client.get.side_effect = [mock_export_resp, mock_result_resp]
+        mock_data_client.__enter__ = MagicMock(return_value=mock_data_client)
+        mock_data_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_data_client):
+            result = resp.get_data()
+
+        assert "| name |" in result
+        assert "Acme" in result
+        # Should have called export first, then result
+        assert mock_data_client.get.call_count == 2
+        assert "/export" in mock_data_client.get.call_args_list[0][0][0]
+        assert "/result" in mock_data_client.get.call_args_list[1][0][0]
+
     def test_get_data_auto_drains_stream(self):
         """get_data() should auto-drain the stream if not yet iterated."""
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
@@ -648,7 +685,7 @@ class TestMindResponse:
 
         csv_text = "a,b\n1,2\n"
         mock_get_response = MagicMock()
-        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.status_code = 200
         mock_get_response.text = csv_text
 
         mock_data_client = MagicMock()
@@ -676,3 +713,31 @@ class TestMindResponse:
 
         with pytest.raises(RuntimeError, match="did not complete"):
             resp.get_data()
+
+    def test_get_data_both_fail_raises_with_details(self):
+        """get_data() should raise RuntimeError with API details when both endpoints fail."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)
+
+        mock_export_resp = MagicMock()
+        mock_export_resp.status_code = 422
+        mock_export_resp.text = "export not available"
+
+        mock_result_resp = MagicMock()
+        mock_result_resp.status_code = 500
+        mock_result_resp.text = "internal error"
+
+        mock_data_client = MagicMock()
+        mock_data_client.get.side_effect = [mock_export_resp, mock_result_resp]
+        mock_data_client.__enter__ = MagicMock(return_value=mock_data_client)
+        mock_data_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_data_client):
+            with pytest.raises(RuntimeError, match="export failed.*422"):
+                resp.get_data()
