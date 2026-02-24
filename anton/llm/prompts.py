@@ -68,6 +68,11 @@ operations, batch I/O, and focused cells that do one thing well.
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
 
+FILE ATTACHMENTS:
+- Users can drag files or paste clipboard images. These appear as <file path="..."> tags.
+- For binary files (images, PDFs), use the scratchpad to read and process them.
+- Clipboard images are saved to .anton/uploads/ — open with Pillow, OpenCV, etc.
+
 VISUALIZATIONS (charts, plots, maps, dashboards, reports):
 - Unless the user explicitly asks for a different format, always output visualizations \
 as polished HTML pages — never raw PNGs or bare image files.

@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING
 
 import anthropic
 
+from anton.clipboard import (
+    cleanup_old_uploads,
+    grab_clipboard,
+    is_clipboard_supported,
+    parse_dropped_paths as _parse_dropped_paths,
+    save_clipboard_image,
+)
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     StreamComplete,
@@ -532,11 +539,87 @@ async def _handle_setup(
     )
 
 
+def _format_file_message(text: str, paths: list[Path], console: Console) -> str:
+    """Rewrite user input to include file contents for detected paths."""
+    parts: list[str] = []
+
+    # Determine what the user typed besides the paths
+    remaining = text
+    for p in paths:
+        # Remove various representations of the path from the text
+        for representation in (str(p), f"'{p}'", f'"{p}"', str(p).replace(" ", "\\ ")):
+            remaining = remaining.replace(representation, "")
+    remaining = remaining.strip()
+
+    # Build the instruction
+    if remaining:
+        parts.append(remaining)
+    else:
+        if len(paths) == 1:
+            parts.append(f"Analyze this file: {paths[0].name}")
+        else:
+            names = ", ".join(p.name for p in paths)
+            parts.append(f"Analyze these files: {names}")
+
+    # Attach each file
+    for p in paths:
+        suffix = p.suffix.lower()
+        size = p.stat().st_size
+
+        # Show what we're picking up
+        console.print(f"  [anton.muted]attached: {p.name} ({_human_size(size)})[/]")
+
+        # Skip very large files (>500KB) — just reference them
+        if size > 512_000:
+            parts.append(f"\n<file path=\"{p}\">\n(File too large to inline — {_human_size(size)}. "
+                         f"Use the scratchpad to read it.)\n</file>")
+            continue
+
+        # Skip binary-looking files
+        if suffix in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+                       ".pdf", ".zip", ".tar", ".gz", ".exe", ".dll", ".so",
+                       ".pyc", ".pyo", ".whl", ".egg", ".db", ".sqlite"):
+            parts.append(f"\n<file path=\"{p}\">\n(Binary file — {_human_size(size)}. "
+                         f"Use the scratchpad to process it.)\n</file>")
+            continue
+
+        try:
+            content = p.read_text(errors="replace")
+        except Exception:
+            parts.append(f"\n<file path=\"{p}\">\n(Could not read file.)\n</file>")
+            continue
+
+        parts.append(f"\n<file path=\"{p}\">\n{content}\n</file>")
+
+    return "\n".join(parts)
+
+
+def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> str:
+    """Build an LLM message for a clipboard image upload."""
+    text = user_text.strip() if user_text else "I've pasted an image from my clipboard. Analyze it."
+    return (
+        f"{text}\n"
+        f'<file path="{uploaded.path}" type="image" source="clipboard">\n'
+        f"(Clipboard image — {uploaded.width}x{uploaded.height}, "
+        f"{_human_size(uploaded.size_bytes)}. Use the scratchpad to open and process it.)\n"
+        f"</file>"
+    )
+
+
+def _human_size(nbytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if nbytes < 1024:
+            return f"{nbytes:.0f}{unit}" if unit == "B" else f"{nbytes:.1f}{unit}"
+        nbytes /= 1024
+    return f"{nbytes:.1f}TB"
+
+
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
     console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
+    console.print("  [bold]/paste[/]  — Attach clipboard image to your message")
     console.print("  [bold]/help[/]   — Show this help message")
     console.print("  [bold]exit[/]                — Quit the chat")
     console.print()
@@ -561,6 +644,10 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     # Workspace for anton.md and secret vault
     workspace = Workspace(settings.workspace_path)
     workspace.apply_env_to_process()
+
+    # Clean up old clipboard uploads
+    uploads_dir = Path(settings.workspace_path) / ".anton" / "uploads"
+    cleanup_old_uploads(uploads_dir)
 
     # Build runtime context so the LLM knows what it's running on
     runtime_context = (
@@ -628,25 +715,66 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 break
 
             stripped = user_input.strip()
+
+            # Empty input → check clipboard for an image
             if not stripped:
-                continue
+                if is_clipboard_supported():
+                    clip = grab_clipboard()
+                    if clip.image:
+                        uploaded = save_clipboard_image(clip.image.image, uploads_dir)
+                        console.print(
+                            f"  [anton.muted]attached: clipboard image "
+                            f"({uploaded.width}x{uploaded.height}, "
+                            f"{_human_size(uploaded.size_bytes)})[/]"
+                        )
+                        stripped = _format_clipboard_image_message(uploaded)
+                    elif clip.file_paths:
+                        stripped = _format_file_message("", clip.file_paths, console)
+                if not stripped:
+                    continue
+
             if stripped.lower() in ("exit", "quit", "bye"):
                 break
 
             # Slash command dispatch
             if stripped.startswith("/"):
-                parts = stripped.split()
+                parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
                 if cmd == "/setup":
                     session = await _handle_setup(
                         console, settings, workspace, state,
                         self_awareness, session,
                     )
+                    continue
                 elif cmd == "/help":
                     _print_slash_help(console)
+                    continue
+                elif cmd == "/paste":
+                    if not is_clipboard_supported():
+                        console.print("[anton.warning]Clipboard not supported (install Pillow).[/]")
+                        continue
+                    clip = grab_clipboard()
+                    if clip.image:
+                        uploaded = save_clipboard_image(clip.image.image, uploads_dir)
+                        console.print(
+                            f"  [anton.muted]attached: clipboard image "
+                            f"({uploaded.width}x{uploaded.height}, "
+                            f"{_human_size(uploaded.size_bytes)})[/]"
+                        )
+                        user_text = parts[1] if len(parts) > 1 else ""
+                        stripped = _format_clipboard_image_message(uploaded, user_text)
+                        # Fall through to turn_stream (don't continue)
+                    else:
+                        console.print("[anton.warning]No image found on clipboard.[/]")
+                        continue
                 else:
                     console.print(f"[anton.warning]Unknown command: {cmd}[/]")
-                continue
+                    continue
+
+            # Detect dragged file paths and reformat the message
+            dropped = _parse_dropped_paths(stripped)
+            if dropped:
+                stripped = _format_file_message(stripped, dropped, console)
 
             display.start()
             t0 = time.monotonic()

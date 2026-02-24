@@ -23,6 +23,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+clipboard = [
+    "Pillow>=9.0",
+]
 
 [project.scripts]
 anton = "anton.cli:app"
