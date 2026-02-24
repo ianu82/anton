@@ -209,12 +209,176 @@ if _scratchpad_model:
         pass  # LLM not available — not fatal (e.g. anthropic not installed)
 
 # --- Inject Mind class for Minds/MindsDB access from scratchpad code ---
-if os.environ.get("MINDS_API_KEY", ""):
-    try:
-        from anton.minds import Mind
-        namespace["Mind"] = Mind
-    except Exception:
-        pass  # Minds not available — not fatal
+_minds_api_key = os.environ.get("MINDS_API_KEY", "")
+if _minds_api_key:
+    _minds_base_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
+
+    class _MindResponse:
+        """Streaming response from Mind.ask(). Iterate for text deltas."""
+
+        def __init__(self, _client, _response, _mind):
+            self._client = _client
+            self._response = _response
+            self._mind = _mind
+            self.text = ""
+            self.completed = False
+            self.conversation_id = None
+            self.message_id = None
+            self._drained = False
+
+        def __iter__(self):
+            try:
+                yield from self._iter_deltas()
+            finally:
+                self._close()
+
+        def _iter_deltas(self):
+            import json as _json
+            for line in self._response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[len("data:"):].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    event = _json.loads(raw)
+                except ValueError:
+                    continue
+                etype = event.get("type", "")
+                if etype == "response.output_text.delta":
+                    delta = event.get("delta", "")
+                    if delta:
+                        self.text += delta
+                        yield delta
+                elif etype == "response.completed":
+                    resp_obj = event.get("response", {})
+                    self.conversation_id = resp_obj.get("conversation_id")
+                    self.message_id = resp_obj.get("id")
+                    self.completed = True
+                    self._mind._conversation_id = self.conversation_id
+            self._drained = True
+
+        def _close(self):
+            try:
+                self._response.close()
+            except Exception:
+                pass
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._drained = True
+
+        def _auto_drain(self):
+            if self._drained:
+                return
+            for _ in self:
+                pass
+
+        def get_data(self, *, limit=None, offset=0):
+            """Fetch tabular results from this response.
+
+            No args  → full CSV export (for pd.read_csv(io.StringIO(csv))).
+            limit=N  → paginated markdown table (N rows, optional offset).
+
+            Auto-drains the stream if you haven't iterated yet.
+            """
+            import httpx
+
+            self._auto_drain()
+            if not self.completed:
+                raise RuntimeError("Stream did not complete — cannot fetch data.")
+
+            headers = {
+                "Authorization": f"Bearer {self._mind._api_key}",
+                "Content-Type": "application/json",
+            }
+            base = (
+                f"/api/v1/conversations/{self.conversation_id}"
+                f"/items/{self.message_id}"
+            )
+
+            with httpx.Client(
+                base_url=self._mind._base_url, timeout=60, follow_redirects=True,
+            ) as client:
+                if limit is None:
+                    resp = client.get(f"{base}/export", headers=headers)
+                    resp.raise_for_status()
+                    return resp.text
+                else:
+                    params = {"limit": limit}
+                    if offset:
+                        params["offset"] = offset
+                    resp = client.get(f"{base}/result", headers=headers, params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    # Format as markdown table
+                    columns = data.get("column_names", [])
+                    rows = data.get("data", [])
+                    if not columns:
+                        return "No data returned."
+                    header = "| " + " | ".join(columns) + " |"
+                    sep = "| " + " | ".join("---" for _ in columns) + " |"
+                    lines = [header, sep]
+                    for row in rows:
+                        cells = [str(c) if c is not None else "" for c in row]
+                        lines.append("| " + " | ".join(cells) + " |")
+                    return "\n".join(lines)
+
+    class Mind:
+        """Streaming interface to query databases via MindsDB minds.
+
+        Usage:
+            mind = Mind('sales')
+            response = mind.ask('top customers?')
+            for chunk in response:
+                print(chunk, end='')       # streaming text
+
+            csv = response.get_data()            # full CSV export
+            table = response.get_data(limit=100) # markdown table (100 rows)
+
+        Follow-ups are automatic — subsequent ask() calls continue
+        the same conversation.
+        """
+
+        def __init__(self, name):
+            self.name = name
+            self._api_key = _minds_api_key
+            self._base_url = _minds_base_url
+            self._conversation_id = None
+
+        def ask(self, question):
+            """Ask a question. Returns a MindResponse (iterate for streaming text)."""
+            import httpx
+
+            headers = {
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "input": question,
+                "model": self.name,
+                "stream": True,
+            }
+            if self._conversation_id:
+                payload["conversation_id"] = self._conversation_id
+
+            client = httpx.Client(
+                base_url=self._base_url, timeout=120, follow_redirects=True,
+            )
+            try:
+                request = client.build_request(
+                    "POST", "/api/v1/responses", headers=headers, json=payload,
+                )
+                response = client.send(request, stream=True)
+                response.raise_for_status()
+            except Exception:
+                client.close()
+                raise
+
+            return _MindResponse(_client=client, _response=response, _mind=self)
+
+    namespace["Mind"] = Mind
 
 # Read-execute loop
 _real_stdout = sys.stdout
@@ -261,6 +425,43 @@ while True:
     try:
         compiled = compile(code, "<scratchpad>", "exec")
         exec(compiled, namespace)
+    except ModuleNotFoundError as _mnf:
+        # Auto-install the missing module and retry the cell once
+        _missing = _mnf.name
+        if _missing:
+            sys.stdout = _real_stdout
+            sys.stderr = sys.__stderr__
+            _real_stdout.write(_PROGRESS_MARKER + " " + f"Installing {_missing}..." + "\n")
+            _real_stdout.flush()
+            import subprocess as _sp
+            _uv_path = os.environ.get("ANTON_UV_PATH", "")
+            if _uv_path:
+                _pip = _sp.run(
+                    [_uv_path, "pip", "install", "--python", sys.executable, _missing],
+                    capture_output=True, timeout=120,
+                )
+            else:
+                _pip = _sp.run(
+                    [sys.executable, "-m", "pip", "install", _missing],
+                    capture_output=True, timeout=120,
+                )
+            # Reset buffers and retry
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            sys.stdout = out_buf
+            sys.stderr = err_buf
+            if _pip.returncode == 0:
+                try:
+                    exec(compiled, namespace)
+                except Exception:
+                    error = traceback.format_exc()
+            else:
+                error = (
+                    f"ModuleNotFoundError: No module named '{_missing}'\n"
+                    f"Auto-install failed:\n{_pip.stderr.decode()}"
+                )
+        else:
+            error = traceback.format_exc()
     except Exception:
         error = traceback.format_exc()
     finally:
@@ -466,6 +667,12 @@ class Scratchpad:
             }.get(self._coding_provider, "")
             if sdk_key and sdk_key not in env:
                 env[sdk_key] = self._coding_api_key
+        # Pass uv path so the boot script can use it for auto-installing
+        # missing modules (same installer that created the venv).
+        uv = self._find_uv()
+        if uv:
+            env["ANTON_UV_PATH"] = uv
+
         # Ensure the anton package is importable in the subprocess (needed for
         # get_llm and skill loading). The boot script runs from a temp file, so
         # the project root isn't on sys.path by default.

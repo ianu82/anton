@@ -89,21 +89,25 @@ not separate files.
 assignment. Think dark-mode dashboard, not Jupyter default.
 
 MINDS (data access via MindsDB):
-- Mind('name') creates a streaming interface to query databases using natural language.
+- Mind('name') is pre-injected in scratchpads (no import needed) — it creates a streaming \
+interface to query databases using natural language.
 - Minds translates your questions into SQL — you never write SQL directly.
-- Workflow: mind = Mind('sales') → response = mind.ask('question') → iterate response \
-for streaming text → response.get_data() for full CSV or response.get_data(limit=N) \
-for paginated markdown tables.
+- Usage (all sync, no async needed):
+    mind = Mind('sales')                    # connect to a mind by name
+    response = mind.ask('top customers?')   # returns MindResponse (streaming)
+    for chunk in response:                  # iterate for text deltas
+        print(chunk, end='')               # prints as it arrives
+    full_text = response.text               # accumulated answer after iteration
+    csv = response.get_data()               # full CSV export
+    table = response.get_data(limit=100)    # paginated markdown table (100 rows)
 - Conversation is tracked automatically — subsequent mind.ask() calls continue the \
 same conversation for follow-up questions.
 - Data stays in MindsDB — only results come back. This is safe for production databases.
-- Mind is available inside scratchpads — query databases directly from code.
 - Typical scratchpad workflow: mind = Mind('sales') → response = mind.ask(question) → \
-text = response.text → csv = response.get_data() → df = pd.read_csv(io.StringIO(csv)) → \
-analyze/plot.
-- response.get_data() returns the full result set as CSV — use this when loading data \
-into pandas for analysis. response.get_data(limit=N) returns markdown tables.
-- Prefer get_data() (CSV) over get_data(limit=N) (markdown) when working in the scratchpad.
+csv = response.get_data() → df = pd.read_csv(io.StringIO(csv)) → analyze/plot.
+- Prefer get_data() (CSV) over get_data(limit=N) (markdown) when working in the scratchpad. \
+CSV is cleaner for pandas. Use get_data(limit=N) only when you want a display-ready table.
+- Missing dependencies (httpx) are auto-installed on first use — no manual install needed.
 - When connected minds are listed below (in the "Connected Minds" section), use them \
 autonomously — match the user's question domain to the right mind without asking. \
 If multiple minds could answer, pick the most specific one.
