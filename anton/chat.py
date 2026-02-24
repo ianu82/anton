@@ -20,7 +20,6 @@ from anton.llm.provider import (
     StreamToolUseEnd,
     StreamToolUseStart,
 )
-from anton.minds import MindsClient
 from anton.scratchpad import ScratchpadManager
 
 if TYPE_CHECKING:
@@ -111,20 +110,7 @@ SCRATCHPAD_TOOL = {
         "agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) "
         "runs a tool-call loop where the LLM reasons and calls your tools iteratively. "
         "handle_tool(name, inputs) -> str is a plain sync function.\n"
-        "All .anton/.env secrets are available as environment variables (os.environ).\n"
-        "Mind('name') creates a streaming database query interface — this is the ONLY "
-        "way to query connected databases. It is pre-injected (no import needed).\n"
-        "A mind is a SQL query layer — mind.ask() translates questions into SQL. "
-        "Keep questions data-retrieval focused (filter, join, sort, aggregate). "
-        "Any further analysis (stats, classification, visualization) must happen "
-        "in Python after retrieving the data.\n"
-        "  mind = Mind('sales')                              # connect to a mind\n"
-        "  response = mind.ask('all orders this quarter')    # simple data query\n"
-        "  csv = response.get_data()                         # full CSV export\n"
-        "  df = pd.read_csv(io.StringIO(csv))                # load into pandas\n"
-        "  # Now analyze in Python: df.groupby(...), df.plot(), etc.\n"
-        "Follow-ups are automatic — subsequent mind.ask() calls continue the conversation. "
-        "Missing dependencies (httpx) are auto-installed on first use.\n\n"
+        "All .anton/.env secrets are available as environment variables (os.environ).\n\n"
         "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
         "no output and no progress() calls for 30s, it is killed and all state is lost. "
         "For long-running code (API calls, data extraction, heavy computation), call "
@@ -164,25 +150,6 @@ SCRATCHPAD_TOOL = {
 }
 
 
-MINDS_KNOWLEDGE_PROMPT = """\
-You are summarizing what a database mind can do. You'll be given the mind name, \
-its datasources, and a schema catalog of tables and columns.
-
-Write a concise 2-4 paragraph summary covering:
-1. What the data contains — describe the domain and key entities.
-2. What questions this mind can answer — give 3-5 concrete example questions.
-3. When to use this mind — what kinds of user requests should be routed here.
-
-Be specific about table and column names so the reader knows exactly what's available, \
-but do NOT include the raw schema. Write in plain English.
-
-Mind: {mind_name}
-Datasources: {datasources}
-
-Schema catalog:
-{catalog}
-"""
-
 
 _MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
 _MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
@@ -208,8 +175,6 @@ class ChatSession:
         console: Console | None = None,
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
-        minds_api_key: str = "",
-        minds_base_url: str = "https://mdb.ai",
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -222,38 +187,10 @@ class ChatSession:
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
         )
-        self._minds: MindsClient | None = (
-            MindsClient(api_key=minds_api_key, base_url=minds_base_url)
-            if minds_api_key
-            else None
-        )
 
     @property
     def history(self) -> list[dict]:
         return self._history
-
-    @property
-    def _minds_dir(self) -> Path | None:
-        """Directory for connected-mind knowledge files."""
-        if self._workspace is None:
-            return None
-        return self._workspace.base / ".anton" / "minds"
-
-    def _build_minds_knowledge_section(self) -> str:
-        """Read .anton/minds/*.md and return a formatted section for the system prompt."""
-        minds_dir = self._minds_dir
-        if minds_dir is None or not minds_dir.is_dir():
-            return ""
-        md_files = sorted(minds_dir.glob("*.md"))
-        if not md_files:
-            return ""
-        parts: list[str] = ["\n\n## Connected Minds\n"]
-        for f in md_files:
-            mind_name = f.stem
-            content = f.read_text(encoding="utf-8").strip()
-            if content:
-                parts.append(f"### {mind_name}\n{content}\n")
-        return "\n".join(parts) if len(parts) > 1 else ""
 
     def _build_system_prompt(self) -> str:
         prompt = CHAT_SYSTEM_PROMPT.format(runtime_context=self._runtime_context)
@@ -266,10 +203,6 @@ class ChatSession:
             md_context = self._workspace.build_anton_md_context()
             if md_context:
                 prompt += md_context
-        # Inject connected-minds knowledge
-        minds_section = self._build_minds_knowledge_section()
-        if minds_section:
-            prompt += minds_section
         return prompt
 
     # Packages the LLM is most likely to care about when writing scratchpad code.
@@ -473,149 +406,6 @@ class ChatSession:
 
         else:
             return f"Unknown scratchpad action: {action}"
-
-    async def _handle_minds_connect(self, mind_name: str, console: Console) -> None:
-        """Connect a mind: fetch schema, summarize with LLM, store knowledge file."""
-        # Validate name
-        if not mind_name or "/" in mind_name or "\\" in mind_name or mind_name.startswith("."):
-            console.print("[anton.error]Invalid mind name.[/]")
-            return
-
-        if self._minds is None:
-            console.print("[anton.error]Minds not configured. Run /minds setup first.[/]")
-            return
-
-        minds_dir = self._minds_dir
-        if minds_dir is None:
-            console.print("[anton.error]No workspace available.[/]")
-            return
-
-        console.print(f"[anton.cyan]Connecting mind '{mind_name}'...[/]")
-
-        # 1. Fetch mind metadata
-        try:
-            mind_info = await self._minds.get_mind(mind_name)
-        except Exception as exc:
-            console.print(f"[anton.error]Failed to fetch mind '{mind_name}': {exc}[/]")
-            return
-
-        datasources = mind_info.get("datasources", [])
-        if not datasources:
-            console.print("[anton.warning]Mind has no datasources.[/]")
-
-        # 2. Build catalog — try API first, fall back to get_mind metadata, then ask
-        catalog_parts: list[str] = []
-        catalog_ok = False
-        for ds in datasources:
-            ds_name = ds if isinstance(ds, str) else ds.get("name", str(ds))
-            # 2a. Try the catalog API endpoint
-            try:
-                cat = await self._minds.catalog(ds_name, mind=mind_name)
-                catalog_parts.append(f"# Datasource: {ds_name}\n{cat}")
-                catalog_ok = True
-                continue
-            except Exception:
-                pass
-
-            # 2b. Fallback: extract table list from get_mind response
-            tables = ds.get("tables", []) if isinstance(ds, dict) else []
-            if tables:
-                table_listing = "\n".join(f"  - {t}" for t in tables)
-                catalog_parts.append(
-                    f"# Datasource: {ds_name}\nAvailable tables:\n{table_listing}"
-                )
-                catalog_ok = True
-            else:
-                catalog_parts.append(f"# Datasource: {ds_name}\n(catalog unavailable)")
-
-        # 2c. Last resort: if nothing worked, ask the mind itself
-        if not catalog_ok:
-            console.print("[anton.muted]Catalog unavailable — asking the mind directly...[/]")
-            try:
-                introspect = await self._minds.ask(
-                    "List every table you have access to and their columns. "
-                    "Be specific — include table names, column names, and data types.",
-                    mind_name,
-                )
-                catalog_parts = [f"# Self-reported schema (from asking the mind)\n{introspect}"]
-            except Exception:
-                pass  # keep whatever we had
-
-        combined_catalog = "\n\n".join(catalog_parts) if catalog_parts else "(no catalog available)"
-        ds_names = ", ".join(
-            ds if isinstance(ds, str) else ds.get("name", str(ds))
-            for ds in datasources
-        ) if datasources else "(none)"
-
-        # 3. Ask LLM to summarize
-        summary: str | None = None
-        try:
-            prompt = MINDS_KNOWLEDGE_PROMPT.format(
-                mind_name=mind_name,
-                datasources=ds_names,
-                catalog=combined_catalog,
-            )
-            resp = await self._llm.plan(
-                system="You are a technical writer producing concise database documentation.",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            summary = resp.content
-        except Exception:
-            pass
-
-        # 4. Write knowledge file
-        if not summary:
-            summary = f"Mind: {mind_name}\nDatasources: {ds_names}\n\n{combined_catalog}"
-
-        minds_dir.mkdir(parents=True, exist_ok=True)
-        (minds_dir / f"{mind_name}.md").write_text(summary, encoding="utf-8")
-        console.print(f"[anton.success]Mind '{mind_name}' connected. Knowledge stored in .anton/minds/{mind_name}.md[/]")
-
-    def _handle_minds_disconnect(self, mind_name: str, console: Console) -> None:
-        """Disconnect a mind by removing its knowledge file."""
-        if not mind_name:
-            console.print("[anton.error]Provide a mind name to disconnect.[/]")
-            return
-
-        minds_dir = self._minds_dir
-        if minds_dir is None:
-            console.print("[anton.error]No workspace available.[/]")
-            return
-
-        md_file = minds_dir / f"{mind_name}.md"
-        if md_file.exists():
-            md_file.unlink()
-            console.print(f"[anton.success]Mind '{mind_name}' disconnected.[/]")
-        else:
-            console.print(f"[anton.warning]Mind '{mind_name}' is not connected.[/]")
-
-    def _handle_minds_status(self, console: Console) -> None:
-        """Show current Minds configuration and connected minds."""
-        console.print()
-        console.print("[anton.cyan]Minds status:[/]")
-
-        # API key
-        current_key = os.environ.get("MINDS_API_KEY", "")
-        if current_key:
-            masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
-            console.print(f"  API key:  [bold]{masked}[/]")
-        else:
-            console.print("  API key:  [dim]not set[/]")
-
-        # Base URL
-        console.print(f"  Base URL: [bold]{os.environ.get('MINDS_BASE_URL', 'https://mdb.ai')}[/]")
-
-        # Connected minds
-        minds_dir = self._minds_dir
-        if minds_dir is not None and minds_dir.is_dir():
-            connected = sorted(f.stem for f in minds_dir.glob("*.md"))
-            if connected:
-                console.print(f"  Connected minds: [bold]{', '.join(connected)}[/]")
-            else:
-                console.print("  Connected minds: [dim]none[/]")
-        else:
-            console.print("  Connected minds: [dim]none[/]")
-        console.print()
 
     async def close(self) -> None:
         """Clean up scratchpads and other resources."""
@@ -922,8 +712,6 @@ def _rebuild_session(
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=api_key,
-        minds_api_key=os.environ.get("MINDS_API_KEY", ""),
-        minds_base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
     )
 
 
@@ -1045,133 +833,11 @@ async def _handle_setup(
     )
 
 
-async def _handle_minds_command(
-    console: Console,
-    settings: AntonSettings,
-    workspace: Workspace,
-    state: dict,
-    self_awareness,
-    session: ChatSession,
-) -> ChatSession:
-    """Unified /minds command: status, setup, browse, and toggle connections."""
-    from rich.prompt import Prompt
-
-    # 1. Always show status
-    session._handle_minds_status(console)
-
-    # 2. Confirm or set API key
-    current_key = os.environ.get("MINDS_API_KEY", "")
-    current_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
-
-    if current_key:
-        masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
-        api_key = Prompt.ask(
-            f"Minds API key [dim](Enter to keep {masked})[/]",
-            default="",
-            console=console,
-        ).strip()
-    else:
-        console.print("[anton.cyan]No Minds API key configured. Let's set one up.[/]")
-        api_key = Prompt.ask("Minds API key", default="", console=console).strip()
-        if not api_key:
-            console.print("[anton.warning]No API key provided. Aborting.[/]")
-            console.print()
-            return session
-
-    base_url = Prompt.ask(
-        "Base URL",
-        default=current_url,
-        console=console,
-    ).strip()
-
-    changed = False
-    if api_key:
-        workspace.set_secret("MINDS_API_KEY", api_key)
-        changed = True
-    if base_url != current_url:
-        workspace.set_secret("MINDS_BASE_URL", base_url)
-        changed = True
-
-    if changed:
-        console.print("[anton.success]Configuration saved.[/]")
-        console.print()
-        session = _rebuild_session(
-            settings=settings,
-            state=state,
-            self_awareness=self_awareness,
-            workspace=workspace,
-            console=console,
-        )
-
-    # 3. Fetch available minds
-    if session._minds is None:
-        console.print("[anton.error]Minds client not available.[/]")
-        console.print()
-        return session
-
-    console.print("[anton.cyan]Fetching available minds...[/]")
-    try:
-        minds_list = await session._minds.list_minds()
-    except Exception as exc:
-        console.print(f"[anton.error]Failed to fetch minds: {exc}[/]")
-        console.print()
-        return session
-
-    if not minds_list:
-        console.print("[dim]No minds found on this account.[/]")
-        console.print()
-        return session
-
-    # 4. Interactive toggle loop
-    minds_dir = session._minds_dir
-    while True:
-        console.print()
-        console.print("[anton.cyan]Available minds:[/]")
-        for m in minds_list:
-            name = m.get("name", "unknown")
-            connected = (
-                minds_dir is not None
-                and (minds_dir / f"{name}.md").exists()
-            )
-            marker = "[bold green]connected[/]" if connected else "[dim]not connected[/]"
-            console.print(f"  [bold]{name}[/]  {marker}")
-
-        console.print()
-        choice = Prompt.ask(
-            "Type a mind name to connect/disconnect [dim](Enter to finish)[/]",
-            default="",
-            console=console,
-        ).strip()
-
-        if not choice:
-            break
-
-        # Check if choice matches a known mind
-        known_names = [m.get("name", "") for m in minds_list]
-        if choice not in known_names:
-            console.print(f"[anton.warning]Unknown mind: {choice}[/]")
-            continue
-
-        # Toggle
-        connected = (
-            minds_dir is not None
-            and (minds_dir / f"{choice}.md").exists()
-        )
-        if connected:
-            session._handle_minds_disconnect(choice, console)
-        else:
-            await session._handle_minds_connect(choice, console)
-
-    console.print()
-    return session
-
-
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
     console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
-    console.print("  [bold]/minds[/]  — Manage Minds: setup, browse, connect/disconnect")
     console.print("  [bold]/help[/]   — Show this help message")
     console.print("  [bold]exit[/]                — Quit the chat")
     console.print()
@@ -1218,8 +884,6 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=coding_api_key,
-        minds_api_key=os.environ.get("MINDS_API_KEY", ""),
-        minds_base_url=os.environ.get("MINDS_BASE_URL", "https://mdb.ai"),
     )
 
     console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
@@ -1276,11 +940,6 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 cmd = parts[0].lower()
                 if cmd == "/setup":
                     session = await _handle_setup(
-                        console, settings, workspace, state,
-                        self_awareness, session,
-                    )
-                elif cmd == "/minds":
-                    session = await _handle_minds_command(
                         console, settings, workspace, state,
                         self_awareness, session,
                     )

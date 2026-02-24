@@ -27,7 +27,6 @@ class _ToolActivity:
 
 _TOOL_LABELS: dict[str, str] = {
     "scratchpad": "Scratchpad",
-    "minds": "Minds",
     "update_context": "Context",
     "request_secret": "Secret",
 }
@@ -46,10 +45,6 @@ def _tool_display_text(name: str, input_json: str) -> str:
     desc = ""
     if name == "scratchpad":
         desc = data.get("one_line_description") or data.get("action", "")
-    elif name == "minds":
-        action = data.get("action", "")
-        question = data.get("question", "")
-        desc = f"{action}: {question}" if question else action
     elif name == "update_context":
         updates = data.get("updates", [])
         desc = f"{len(updates)} file(s)"
@@ -197,11 +192,10 @@ class StreamDisplay:
         if self._live is None:
             return
 
-        # For minds/scratchpad streaming, show progress on the activity line itself
-        if phase in ("minds", "scratchpad") and self._activities:
-            target_name = phase if phase == "minds" else "scratchpad"
+        # For scratchpad streaming, show progress on the activity line itself
+        if phase == "scratchpad" and self._activities:
             for act in reversed(self._activities):
-                if act.name == target_name:
+                if act.name == "scratchpad":
                     act.current_progress = message
                     break
             self._refresh_live()

@@ -86,7 +86,7 @@ class TestStreamDisplay:
         assert live.update.call_count >= 1
 
     def test_phase_labels_cover_all_phases(self):
-        expected = {"memory_recall", "planning", "executing", "complete", "failed"}
+        expected = {"memory_recall", "planning", "executing", "complete", "failed", "scratchpad"}
         assert expected == set(PHASE_LABELS.keys())
 
 
