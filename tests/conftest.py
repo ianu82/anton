@@ -4,17 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from anton.channel.base import Channel
 from anton.llm.provider import LLMResponse, ToolCall, Usage
-
-
-@pytest.fixture()
-def mock_channel() -> AsyncMock:
-    ch = AsyncMock(spec=Channel)
-    ch.emit = AsyncMock()
-    ch.prompt = AsyncMock(return_value="yes")
-    ch.close = AsyncMock()
-    return ch
 
 
 @pytest.fixture()

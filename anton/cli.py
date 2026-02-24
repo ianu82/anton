@@ -294,56 +294,6 @@ def list_learnings(ctx: typer.Context) -> None:
     console.print(table)
 
 
-@app.command("channels")
-def list_channels() -> None:
-    """List available communication channels."""
-    from anton.channel.registry import ChannelRegistry
-    from anton.channel.terminal import CLIChannel, TerminalChannel
-    from anton.channel.types import ChannelCapability, ChannelInfo, ChannelMeta
-
-    registry = ChannelRegistry()
-    registry.register(
-        ChannelInfo(
-            meta=ChannelMeta(
-                id="cli",
-                label="Terminal CLI",
-                description="Rich interactive terminal",
-                icon="\U0001f4bb",
-                capabilities=[
-                    ChannelCapability.TEXT_OUTPUT,
-                    ChannelCapability.TEXT_INPUT,
-                    ChannelCapability.INTERACTIVE,
-                    ChannelCapability.RICH_FORMATTING,
-                ],
-                aliases=["terminal", "term"],
-            ),
-            factory=CLIChannel,
-        )
-    )
-
-    channels = registry.list_all()
-    if not channels:
-        console.print("[dim]No channels registered.[/]")
-        return
-
-    table = Table(title="Channels")
-    table.add_column("ID", style="anton.cyan")
-    table.add_column("Label")
-    table.add_column("Description")
-    table.add_column("Capabilities")
-
-    for ch in channels:
-        caps = ", ".join(c.value for c in ch.meta.capabilities)
-        table.add_row(
-            f"{ch.meta.icon}  {ch.meta.id}" if ch.meta.icon else ch.meta.id,
-            ch.meta.label,
-            ch.meta.description,
-            caps,
-        )
-
-    console.print(table)
-
-
 @app.command("version")
 def version() -> None:
     """Show Anton version."""

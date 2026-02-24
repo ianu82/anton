@@ -21,6 +21,14 @@ from anton.llm.provider import (
     StreamToolUseStart,
 )
 from anton.scratchpad import ScratchpadManager
+from anton.tools import (
+    REQUEST_SECRET_TOOL,
+    SCRATCHPAD_TOOL,
+    UPDATE_CONTEXT_TOOL,
+    dispatch_tool,
+    format_cell_result,
+    prepare_scratchpad_exec,
+)
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -29,126 +37,6 @@ if TYPE_CHECKING:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.workspace import Workspace
-
-UPDATE_CONTEXT_TOOL = {
-    "name": "update_context",
-    "description": (
-        "Update self-awareness context files when you learn something important "
-        "about the project or workspace. Use this to persist knowledge for future sessions."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "updates": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "file": {
-                            "type": "string",
-                            "description": "Filename like 'project-overview.md'",
-                        },
-                        "content": {
-                            "type": ["string", "null"],
-                            "description": "New content, or null to delete the file",
-                        },
-                    },
-                    "required": ["file", "content"],
-                },
-            },
-        },
-        "required": ["updates"],
-    },
-}
-
-REQUEST_SECRET_TOOL = {
-    "name": "request_secret",
-    "description": (
-        "Request a secret value (API key, token, password) from the user. "
-        "The value is stored directly in .anton/.env and NEVER passed through the LLM. "
-        "After calling this, you will be told the variable has been set — use it by name."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "variable_name": {
-                "type": "string",
-                "description": "Environment variable name to store (e.g. 'GITHUB_TOKEN', 'DATABASE_PASSWORD')",
-            },
-            "prompt_text": {
-                "type": "string",
-                "description": "What to ask the user (e.g. 'Please enter your GitHub personal access token')",
-            },
-        },
-        "required": ["variable_name", "prompt_text"],
-    },
-}
-
-
-SCRATCHPAD_TOOL = {
-    "name": "scratchpad",
-    "description": (
-        "Run Python code in a persistent scratchpad. Use this whenever you need to "
-        "count characters, do math, parse data, transform text, or any task that "
-        "benefits from precise computation rather than guessing. Variables, imports, "
-        "and data persist across cells — like a notebook you drive programmatically.\n\n"
-        "Actions:\n"
-        "- exec: Run code in the scratchpad (creates it if needed)\n"
-        "- view: See all cells and their outputs\n"
-        "- reset: Restart the process, clearing all state (installed packages survive)\n"
-        "- remove: Kill the scratchpad and delete its environment\n"
-        "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n"
-        "- install: Install Python packages into the scratchpad's environment. "
-        "Packages persist across resets.\n\n"
-        "Use print() to produce output. Host Python packages are available by default. "
-        "Include a 'packages' array on exec calls for any libraries your code needs — "
-        "they'll be auto-installed before the cell runs (already-installed ones are skipped).\n"
-        "get_llm() returns a pre-configured LLM client (sync) — call "
-        "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
-        "llm.generate_object(MyModel, system=..., messages=[...]) extracts structured "
-        "data into Pydantic models. Supports single models and list[Model].\n"
-        "agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) "
-        "runs a tool-call loop where the LLM reasons and calls your tools iteratively. "
-        "handle_tool(name, inputs) -> str is a plain sync function.\n"
-        "All .anton/.env secrets are available as environment variables (os.environ).\n\n"
-        "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
-        "no output and no progress() calls for 30s, it is killed and all state is lost. "
-        "For long-running code (API calls, data extraction, heavy computation), call "
-        "progress(message) periodically to signal work is ongoing and reset the timer. "
-        "The total timeout scales from your estimated_execution_time_seconds "
-        "(roughly 2x the estimate). You MUST provide estimated_execution_time_seconds "
-        "for every exec call. For very long operations, provide a realistic estimate "
-        "and use progress() to keep the cell alive."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove", "dump", "install"]},
-            "name": {"type": "string", "description": "Scratchpad name"},
-            "code": {
-                "type": "string",
-                "description": "Python code (exec only). Use print() for output.",
-            },
-            "packages": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Package names needed by this cell (exec or install). "
-                "Listed after code so you know exactly what to include. "
-                "Already-installed packages are skipped automatically.",
-            },
-            "one_line_description": {
-                "type": "string",
-                "description": "Brief description of what this cell does (e.g. 'Scrape listing prices'). Required for exec.",
-            },
-            "estimated_execution_time_seconds": {
-                "type": "integer",
-                "description": "Estimated execution time in seconds. Drives the total timeout (roughly 2x estimate). Use progress() for long cells.",
-            },
-        },
-        "required": ["action", "name"],
-    },
-}
-
 
 
 _MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
@@ -242,171 +130,6 @@ class ChatSession:
             tools.append(REQUEST_SECRET_TOOL)
         return tools
 
-    def _handle_update_context(self, tc_input: dict) -> str:
-        """Process an update_context tool call and return a result string."""
-        if self._self_awareness is None:
-            return "Context updates not available."
-
-        from anton.context.self_awareness import ContextUpdate
-
-        raw_updates = tc_input.get("updates", [])
-        updates = [
-            ContextUpdate(file=u["file"], content=u.get("content"))
-            for u in raw_updates
-            if isinstance(u, dict) and "file" in u
-        ]
-
-        if not updates:
-            return "No valid updates provided."
-
-        actions = self._self_awareness.apply_updates(updates)
-        return "Context updated: " + "; ".join(actions)
-
-    def _handle_request_secret(self, tc_input: dict) -> str:
-        """Handle a request_secret tool call.
-
-        Asks the user directly for the secret value, stores it in .env,
-        and returns a confirmation — NEVER returns the actual secret value.
-        """
-        if self._workspace is None or self._console is None:
-            return "Secret storage not available."
-
-        var_name = tc_input.get("variable_name", "")
-        prompt_text = tc_input.get("prompt_text", f"Enter value for {var_name}")
-
-        if not var_name:
-            return "No variable_name provided."
-
-        # Check if already set
-        if self._workspace.has_secret(var_name):
-            return f"Variable {var_name} is already set in .anton/.env."
-
-        # Ask user directly — this bypasses the LLM entirely
-        self._console.print()
-        value = self._console.input(f"[bold]{prompt_text}:[/] ")
-        value = value.strip()
-
-        if not value:
-            return f"No value provided for {var_name}. Variable not set."
-
-        # Store securely — value never touches the LLM
-        self._workspace.set_secret(var_name, value)
-        return f"Variable {var_name} has been set in .anton/.env. You can now use it."
-
-    async def _prepare_scratchpad_exec(self, tc_input: dict):
-        """Validate and prepare a scratchpad exec call.
-
-        Returns (pad, code, description, estimated_time, estimated_seconds) or
-        a str error message if validation fails.
-        """
-        name = tc_input.get("name", "")
-        code = tc_input.get("code", "")
-        if not code or not code.strip():
-            return "No code provided."
-
-        pad = await self._scratchpads.get_or_create(name)
-
-        # Auto-install packages before running the cell
-        packages = tc_input.get("packages", [])
-        if packages:
-            install_result = await pad.install_packages(packages)
-            if "Install failed" in install_result or "timed out" in install_result:
-                return install_result
-
-        description = tc_input.get("one_line_description", "")
-        estimated_seconds = tc_input.get("estimated_execution_time_seconds", 0)
-        if isinstance(estimated_seconds, str):
-            try:
-                estimated_seconds = int(estimated_seconds)
-            except ValueError:
-                estimated_seconds = 0
-
-        estimated_time = f"{estimated_seconds}s" if estimated_seconds > 0 else ""
-        return pad, code, description, estimated_time, estimated_seconds
-
-    @staticmethod
-    def _format_cell_result(cell) -> str:
-        """Format a Cell into a tool result string.
-
-        Every section is labeled so the LLM can tell what came from where:
-        [output] — print() / stdout from the cell code
-        [logs]   — library logging (httpx, urllib3, etc.) captured at INFO+
-        [stderr] — warnings and stderr writes
-        [error]  — Python traceback if the cell raised an exception
-        """
-        parts: list[str] = []
-        if cell.stdout:
-            stdout = cell.stdout
-            if len(stdout) > 10_000:
-                stdout = stdout[:10_000] + f"\n\n... (truncated, {len(stdout)} chars total)"
-            parts.append(f"[output]\n{stdout}")
-        if cell.logs if hasattr(cell, "logs") else False:
-            logs = cell.logs.strip()
-            if len(logs) > 3_000:
-                logs = logs[:3_000] + "\n... (logs truncated)"
-            parts.append(f"[logs]\n{logs}")
-        if cell.stderr:
-            parts.append(f"[stderr]\n{cell.stderr}")
-        if cell.error:
-            parts.append(f"[error]\n{cell.error}")
-        if not parts:
-            return "Code executed successfully (no output)."
-        return "\n".join(parts)
-
-    async def _handle_scratchpad(self, tc_input: dict) -> str:
-        """Dispatch a scratchpad tool call by action."""
-        action = tc_input.get("action", "")
-        name = tc_input.get("name", "")
-
-        if not name:
-            return "Scratchpad name is required."
-
-        if action == "exec":
-            result = await self._prepare_scratchpad_exec(tc_input)
-            if isinstance(result, str):
-                return result
-            pad, code, description, estimated_time, estimated_seconds = result
-
-            cell = await pad.execute(
-                code,
-                description=description,
-                estimated_time=estimated_time,
-                estimated_seconds=estimated_seconds,
-            )
-            return self._format_cell_result(cell)
-
-        elif action == "view":
-            pad = self._scratchpads._pads.get(name)
-            if pad is None:
-                return f"No scratchpad named '{name}'."
-            return pad.view()
-
-        elif action == "reset":
-            pad = self._scratchpads._pads.get(name)
-            if pad is None:
-                return f"No scratchpad named '{name}'."
-            await pad.reset()
-            return f"Scratchpad '{name}' reset. All state cleared."
-
-        elif action == "remove":
-            return await self._scratchpads.remove(name)
-
-        elif action == "dump":
-            pad = self._scratchpads._pads.get(name)
-            if pad is None:
-                return f"No scratchpad named '{name}'."
-            return pad.render_notebook()
-
-        elif action == "install":
-            packages = tc_input.get("packages", [])
-            if not packages:
-                return "No packages specified."
-            pad = await self._scratchpads.get_or_create(name)
-            return await pad.install_packages(packages)
-
-        else:
-            return f"Unknown scratchpad action: {action}"
-
     async def close(self) -> None:
         """Clean up scratchpads and other resources."""
         await self._scratchpads.close_all()
@@ -423,10 +146,10 @@ class ChatSession:
             tools=tools,
         )
 
-        # Handle tool calls (execute_task, update_context, request_secret)
+        # Handle tool calls
         tool_round = 0
-        error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
-        resilience_nudged: set[str] = set()  # tools that have been nudged this streak
+        error_streak: dict[str, int] = {}
+        resilience_nudged: set[str] = set()
 
         while response.tool_calls:
             tool_round += 1
@@ -459,45 +182,17 @@ class ChatSession:
                 })
             self._history.append({"role": "assistant", "content": assistant_content})
 
-            # Process each tool call
+            # Process each tool call via registry
             tool_results: list[dict] = []
             for tc in response.tool_calls:
                 try:
-                    if tc.name == "update_context":
-                        result_text = self._handle_update_context(tc.input)
-                    elif tc.name == "request_secret":
-                        result_text = self._handle_request_secret(tc.input)
-                    elif tc.name == "scratchpad":
-                        result_text = await self._handle_scratchpad(tc.input)
-                    else:
-                        result_text = f"Unknown tool: {tc.name}"
+                    result_text = await dispatch_tool(self, tc.name, tc.input)
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
-                # Track consecutive errors per tool
-                is_error = any(
-                    marker in result_text
-                    for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+                result_text = _apply_error_tracking(
+                    result_text, tc.name, error_streak, resilience_nudged,
                 )
-                if is_error:
-                    error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
-                else:
-                    error_streak[tc.name] = 0
-                    resilience_nudged.discard(tc.name)
-
-                # Resilience nudge: encourage creative workarounds before circuit breaker
-                streak = error_streak.get(tc.name, 0)
-                if streak >= _RESILIENCE_NUDGE_AT and tc.name not in resilience_nudged:
-                    result_text += _RESILIENCE_NUDGE
-                    resilience_nudged.add(tc.name)
-
-                # Circuit breaker: if same tool fails too many times, inject a stop signal
-                if streak >= _MAX_CONSECUTIVE_ERRORS:
-                    result_text += (
-                        f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
-                        "in a row. Stop retrying this approach. Either try a completely different "
-                        "strategy or tell the user what's going wrong so they can help."
-                    )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -549,8 +244,8 @@ class ChatSession:
 
         # Tool-call loop with circuit breaker
         tool_round = 0
-        error_streak: dict[str, int] = {}  # tool_name -> consecutive error count
-        resilience_nudged: set[str] = set()  # tools that have been nudged this streak
+        error_streak: dict[str, int] = {}
+        resilience_nudged: set[str] = set()
 
         while llm_response.tool_calls:
             tool_round += 1
@@ -588,71 +283,43 @@ class ChatSession:
             tool_results: list[dict] = []
             for tc in llm_response.tool_calls:
                 try:
-                    if tc.name == "update_context":
-                        result_text = self._handle_update_context(tc.input)
-                    elif tc.name == "request_secret":
-                        result_text = self._handle_request_secret(tc.input)
-                    elif tc.name == "scratchpad":
-                        if tc.input.get("action") == "exec":
-                            # Inline streaming exec — yields progress events
-                            prep = await self._prepare_scratchpad_exec(tc.input)
-                            if isinstance(prep, str):
-                                result_text = prep
-                            else:
-                                pad, code, description, estimated_time, estimated_seconds = prep
-                                from anton.scratchpad import Cell
-                                cell = None
-                                async for item in pad.execute_streaming(
-                                    code,
-                                    description=description,
-                                    estimated_time=estimated_time,
-                                    estimated_seconds=estimated_seconds,
-                                ):
-                                    if isinstance(item, str):
-                                        yield StreamTaskProgress(
-                                            phase="scratchpad", message=item
-                                        )
-                                    elif isinstance(item, Cell):
-                                        cell = item
-                                result_text = self._format_cell_result(cell) if cell else "No result produced."
+                    if tc.name == "scratchpad" and tc.input.get("action") == "exec":
+                        # Inline streaming exec — yields progress events
+                        prep = await prepare_scratchpad_exec(self, tc.input)
+                        if isinstance(prep, str):
+                            result_text = prep
                         else:
-                            result_text = await self._handle_scratchpad(tc.input)
-                            if tc.input.get("action") == "dump":
-                                yield StreamToolResult(content=result_text)
-                                result_text = (
-                                    "The full notebook has been displayed to the user above. "
-                                    "Do not repeat it. Here is the content for your reference:\n\n"
-                                    + result_text
-                                )
+                            pad, code, description, estimated_time, estimated_seconds = prep
+                            from anton.scratchpad import Cell
+                            cell = None
+                            async for item in pad.execute_streaming(
+                                code,
+                                description=description,
+                                estimated_time=estimated_time,
+                                estimated_seconds=estimated_seconds,
+                            ):
+                                if isinstance(item, str):
+                                    yield StreamTaskProgress(
+                                        phase="scratchpad", message=item
+                                    )
+                                elif isinstance(item, Cell):
+                                    cell = item
+                            result_text = format_cell_result(cell) if cell else "No result produced."
                     else:
-                        result_text = f"Unknown tool: {tc.name}"
+                        result_text = await dispatch_tool(self, tc.name, tc.input)
+                        if tc.name == "scratchpad" and tc.input.get("action") == "dump":
+                            yield StreamToolResult(content=result_text)
+                            result_text = (
+                                "The full notebook has been displayed to the user above. "
+                                "Do not repeat it. Here is the content for your reference:\n\n"
+                                + result_text
+                            )
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
-                # Track consecutive errors per tool
-                is_error = any(
-                    marker in result_text
-                    for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+                result_text = _apply_error_tracking(
+                    result_text, tc.name, error_streak, resilience_nudged,
                 )
-                if is_error:
-                    error_streak[tc.name] = error_streak.get(tc.name, 0) + 1
-                else:
-                    error_streak[tc.name] = 0
-                    resilience_nudged.discard(tc.name)
-
-                # Resilience nudge: encourage creative workarounds before circuit breaker
-                streak = error_streak.get(tc.name, 0)
-                if streak >= _RESILIENCE_NUDGE_AT and tc.name not in resilience_nudged:
-                    result_text += _RESILIENCE_NUDGE
-                    resilience_nudged.add(tc.name)
-
-                # Circuit breaker: if same tool fails too many times, inject a stop signal
-                if streak >= _MAX_CONSECUTIVE_ERRORS:
-                    result_text += (
-                        f"\n\nSYSTEM: The '{tc.name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
-                        "in a row. Stop retrying this approach. Either try a completely different "
-                        "strategy or tell the user what's going wrong so they can help."
-                    )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -680,6 +347,38 @@ class ChatSession:
         # Text-only final response — append to history
         reply = llm_response.content or ""
         self._history.append({"role": "assistant", "content": reply})
+
+
+def _apply_error_tracking(
+    result_text: str,
+    tool_name: str,
+    error_streak: dict[str, int],
+    resilience_nudged: set[str],
+) -> str:
+    """Track consecutive errors per tool and append nudge/circuit-breaker messages."""
+    is_error = any(
+        marker in result_text
+        for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+    )
+    if is_error:
+        error_streak[tool_name] = error_streak.get(tool_name, 0) + 1
+    else:
+        error_streak[tool_name] = 0
+        resilience_nudged.discard(tool_name)
+
+    streak = error_streak.get(tool_name, 0)
+    if streak >= _RESILIENCE_NUDGE_AT and tool_name not in resilience_nudged:
+        result_text += _RESILIENCE_NUDGE
+        resilience_nudged.add(tool_name)
+
+    if streak >= _MAX_CONSECUTIVE_ERRORS:
+        result_text += (
+            f"\n\nSYSTEM: The '{tool_name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
+            "in a row. Stop retrying this approach. Either try a completely different "
+            "strategy or tell the user what's going wrong so they can help."
+        )
+
+    return result_text
 
 
 def _rebuild_session(
