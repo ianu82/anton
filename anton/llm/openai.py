@@ -115,16 +115,16 @@ def _translate_assistant_blocks(blocks: list[dict]) -> list[dict]:
 
 
 def _translate_user_blocks(blocks: list[dict]) -> list[dict]:
-    """Convert user content blocks (including tool_result) to OpenAI messages."""
+    """Convert user content blocks (including tool_result and image) to OpenAI messages."""
     result: list[dict] = []
-    text_parts: list[str] = []
+    content_parts: list[dict] = []  # Accumulates text + image_url blocks
 
     for block in blocks:
         if block.get("type") == "tool_result":
-            # Flush any accumulated text first
-            if text_parts:
-                result.append({"role": "user", "content": "\n".join(text_parts)})
-                text_parts = []
+            # Flush any accumulated content parts first
+            if content_parts:
+                result.append({"role": "user", "content": content_parts})
+                content_parts = []
             # tool_result -> role:tool message
             content = block.get("content", "")
             if isinstance(content, list):
@@ -137,10 +137,27 @@ def _translate_user_blocks(blocks: list[dict]) -> list[dict]:
                 "content": str(content),
             })
         elif block.get("type") == "text":
-            text_parts.append(block.get("text", ""))
+            content_parts.append({"type": "text", "text": block.get("text", "")})
+        elif block.get("type") == "image":
+            # Anthropic image block -> OpenAI image_url block
+            source = block.get("source", {})
+            if source.get("type") == "base64":
+                media_type = source.get("media_type", "image/png")
+                data = source.get("data", "")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{data}"},
+                })
 
-    if text_parts:
-        result.append({"role": "user", "content": "\n".join(text_parts)})
+    if content_parts:
+        # If only text parts, flatten to a simple string for compatibility
+        if all(p.get("type") == "text" for p in content_parts):
+            result.append({
+                "role": "user",
+                "content": "\n".join(p["text"] for p in content_parts),
+            })
+        else:
+            result.append({"role": "user", "content": content_parts})
 
     return result
 

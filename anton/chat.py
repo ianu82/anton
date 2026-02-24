@@ -81,7 +81,25 @@ class ChatSession:
             coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
+            secret_handler=self._make_secret_handler(),
         )
+
+    def _make_secret_handler(self):
+        """Create a closure that prompts the user for secrets via the console."""
+        def handler(var_name: str, prompt_text: str) -> str | None:
+            if self._workspace is None or self._console is None:
+                return None
+            # If already stored, return it without prompting
+            if self._workspace.has_secret(var_name):
+                return os.environ.get(var_name) or self._workspace.get_secret(var_name)
+            self._console.print()
+            value = self._console.input(f"[bold]{prompt_text}:[/] ")
+            value = value.strip()
+            if not value:
+                return None
+            self._workspace.set_secret(var_name, value)
+            return value
+        return handler
 
     @property
     def history(self) -> list[dict]:
@@ -141,7 +159,7 @@ class ChatSession:
         """Clean up scratchpads and other resources."""
         await self._scratchpads.close_all()
 
-    async def turn(self, user_input: str) -> str:
+    async def turn(self, user_input: str | list[dict]) -> str:
         self._history.append({"role": "user", "content": user_input})
 
         system = self._build_system_prompt()
@@ -221,7 +239,7 @@ class ChatSession:
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
-    async def turn_stream(self, user_input: str) -> AsyncIterator[StreamEvent]:
+    async def turn_stream(self, user_input: str | list[dict]) -> AsyncIterator[StreamEvent]:
         """Streaming version of turn(). Yields events as they arrive."""
         self._history.append({"role": "user", "content": user_input})
 
@@ -594,16 +612,40 @@ def _format_file_message(text: str, paths: list[Path], console: Console) -> str:
     return "\n".join(parts)
 
 
-def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> str:
-    """Build an LLM message for a clipboard image upload."""
+def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> list[dict]:
+    """Build a multimodal LLM message for a clipboard image upload.
+
+    Returns a list of content blocks (image + text) so the LLM can see
+    the image directly. The file path is included so the LLM can pass
+    it to the scratchpad if deeper processing is needed.
+    """
+    import base64
+
     text = user_text.strip() if user_text else "I've pasted an image from my clipboard. Analyze it."
-    return (
-        f"{text}\n"
-        f'<file path="{uploaded.path}" type="image" source="clipboard">\n'
-        f"(Clipboard image — {uploaded.width}x{uploaded.height}, "
-        f"{_human_size(uploaded.size_bytes)}. Use the scratchpad to open and process it.)\n"
-        f"</file>"
+    text += (
+        f"\n\nThe image is also saved at: {uploaded.path}\n"
+        f"({uploaded.width}x{uploaded.height}, {_human_size(uploaded.size_bytes)}). "
+        f"If you need to process it programmatically, use that path in the scratchpad."
     )
+
+    # Read and base64-encode the saved PNG
+    image_data = Path(uploaded.path).read_bytes()
+    b64 = base64.standard_b64encode(image_data).decode("ascii")
+
+    return [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": b64,
+            },
+        },
+        {
+            "type": "text",
+            "text": text,
+        },
+    ]
 
 
 def _human_size(nbytes: int) -> str:
@@ -618,10 +660,11 @@ def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/setup[/]  — Configure provider, model, and API key")
-    console.print("  [bold]/paste[/]  — Attach clipboard image to your message")
-    console.print("  [bold]/help[/]   — Show this help message")
-    console.print("  [bold]exit[/]                — Quit the chat")
+    console.print("  [bold]/setup[/]    — Configure provider, model, and API key")
+    console.print("  [bold]/connect[/]  — Connect to a data source (guided credential collection)")
+    console.print("  [bold]/paste[/]    — Attach clipboard image to your message")
+    console.print("  [bold]/help[/]     — Show this help message")
+    console.print("  [bold]exit[/]                  — Quit the chat")
     console.print()
 
 
@@ -715,6 +758,9 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                 break
 
             stripped = user_input.strip()
+            # message_content holds what we send to the LLM — may be str or
+            # list[dict] (multimodal content blocks for images).
+            message_content: str | list[dict] | None = None
 
             # Empty input → check clipboard for an image
             if not stripped:
@@ -727,17 +773,17 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                             f"({uploaded.width}x{uploaded.height}, "
                             f"{_human_size(uploaded.size_bytes)})[/]"
                         )
-                        stripped = _format_clipboard_image_message(uploaded)
+                        message_content = _format_clipboard_image_message(uploaded)
                     elif clip.file_paths:
                         stripped = _format_file_message("", clip.file_paths, console)
-                if not stripped:
+                if not stripped and message_content is None:
                     continue
 
-            if stripped.lower() in ("exit", "quit", "bye"):
+            if message_content is None and stripped.lower() in ("exit", "quit", "bye"):
                 break
 
             # Slash command dispatch
-            if stripped.startswith("/"):
+            if message_content is None and stripped.startswith("/"):
                 parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
                 if cmd == "/setup":
@@ -762,19 +808,40 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                             f"{_human_size(uploaded.size_bytes)})[/]"
                         )
                         user_text = parts[1] if len(parts) > 1 else ""
-                        stripped = _format_clipboard_image_message(uploaded, user_text)
+                        message_content = _format_clipboard_image_message(uploaded, user_text)
                         # Fall through to turn_stream (don't continue)
                     else:
                         console.print("[anton.warning]No image found on clipboard.[/]")
                         continue
+                elif cmd == "/connect":
+                    user_text = parts[1] if len(parts) > 1 else ""
+                    if user_text:
+                        stripped = (
+                            f"I want to connect to {user_text}. Ask me for the connection "
+                            f"details I need to provide, collect them securely using "
+                            f"request_secret, and then test the connection in the scratchpad."
+                        )
+                    else:
+                        stripped = (
+                            "I want to connect to a data source. Ask me what type "
+                            "(PostgreSQL, MySQL, API, etc.), then collect the minimal "
+                            "credentials needed using request_secret, and test the "
+                            "connection in the scratchpad."
+                        )
+                    # Fall through to turn_stream
                 else:
                     console.print(f"[anton.warning]Unknown command: {cmd}[/]")
                     continue
 
             # Detect dragged file paths and reformat the message
-            dropped = _parse_dropped_paths(stripped)
-            if dropped:
-                stripped = _format_file_message(stripped, dropped, console)
+            if message_content is None:
+                dropped = _parse_dropped_paths(stripped)
+                if dropped:
+                    stripped = _format_file_message(stripped, dropped, console)
+
+            # Use multimodal content if set, otherwise the text string
+            if message_content is None:
+                message_content = stripped
 
             display.start()
             t0 = time.monotonic()
@@ -783,7 +850,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
             total_output = 0
 
             try:
-                async for event in session.turn_stream(stripped):
+                async for event in session.turn_stream(message_content):
                     if isinstance(event, StreamTextDelta):
                         if ttft is None:
                             ttft = time.monotonic() - t0

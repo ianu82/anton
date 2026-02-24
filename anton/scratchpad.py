@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import venv
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,9 @@ _CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before kil
 _INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
 _PROGRESS_MARKER = "__ANTON_PROGRESS__"
+_NEED_SECRET_MARKER = "__ANTON_NEED_SECRET__"
+_SET_ENV_MARKER = "__ANTON_SET_ENV__"
+_SECRET_DONE_MARKER = "__ANTON_SECRET_DONE__"
 
 
 def _compute_timeouts(estimated_seconds: int) -> tuple[float, float]:
@@ -63,6 +67,7 @@ class Scratchpad:
     _venv_dir: str | None = field(default=None, repr=False)
     _venv_python: str | None = field(default=None, repr=False)
     _installed_packages: set[str] = field(default_factory=set, repr=False)
+    _secret_handler: Callable[[str, str], str | None] | None = field(default=None, repr=False)
 
     _MAX_VENV_RETRIES = 3
 
@@ -411,6 +416,28 @@ class Scratchpad:
                 yield message
                 continue
 
+            # Secret request — handle inline, send response to subprocess stdin
+            if line.startswith(_NEED_SECRET_MARKER):
+                payload = json.loads(line[len(_NEED_SECRET_MARKER):].strip())
+                var_name = payload["variable_name"]
+                prompt_text = payload.get("prompt_text", f"Enter value for {var_name}")
+
+                value: str | None = None
+                if self._secret_handler:
+                    value = self._secret_handler(var_name, prompt_text)
+
+                if value is not None:
+                    env_msg = json.dumps({"variable_name": var_name, "value": value})
+                    self._proc.stdin.write(f"{_SET_ENV_MARKER} {env_msg}\n".encode())
+                    self._proc.stdin.write(f"{_SECRET_DONE_MARKER}\n".encode())
+                    await self._proc.stdin.drain()
+                    yield f"Secret '{var_name}' provided"
+                else:
+                    self._proc.stdin.write(f"{_SECRET_DONE_MARKER} error\n".encode())
+                    await self._proc.stdin.drain()
+                    yield f"Secret '{var_name}' not provided"
+                continue
+
             if line == _RESULT_START:
                 in_result = True
                 continue
@@ -597,11 +624,13 @@ class ScratchpadManager:
         coding_provider: str = "anthropic",
         coding_model: str = "",
         coding_api_key: str = "",
+        secret_handler: Callable[[str, str], str | None] | None = None,
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
+        self._secret_handler = secret_handler
         self._available_packages: list[str] = self.probe_packages()
 
     @staticmethod
@@ -619,6 +648,7 @@ class ScratchpadManager:
                 _coding_provider=self._coding_provider,
                 _coding_model=self._coding_model,
                 _coding_api_key=self._coding_api_key,
+                _secret_handler=self._secret_handler,
             )
             await pad.start()
             self._pads[name] = pad

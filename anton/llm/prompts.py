@@ -53,6 +53,10 @@ tool-call loop inside scratchpad code. The LLM reasons and calls your tools iter
 handle_tool(name, inputs) is a plain sync function returning a string result. Use this for \
 multi-step AI workflows like classification, extraction, or analysis with structured outputs.
 - All .anton/.env secrets are available as environment variables (os.environ).
+- need_secret(variable_name, prompt_text) — if your code needs an API key, password, or token \
+that isn't already in the environment, call need_secret() in your scratchpad code. It prompts \
+the user directly (bypassing the LLM), stores the value in .anton/.env, and makes it available \
+via os.environ. The secret is never returned as a value — access it via os.environ after calling.
 - When the user asks how you solved something or wants to see your work, use the scratchpad \
 dump action — it shows a clean notebook-style summary without wasting tokens on reformatting.
 - Always use print() to produce output — scratchpad captures stdout.

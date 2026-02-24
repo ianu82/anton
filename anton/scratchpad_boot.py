@@ -185,6 +185,51 @@ def progress(message=""):
 
 namespace["progress"] = progress
 
+_NEED_SECRET_MARKER = "__ANTON_NEED_SECRET__"
+_SET_ENV_MARKER = "__ANTON_SET_ENV__"
+_SECRET_DONE_MARKER = "__ANTON_SECRET_DONE__"
+
+
+def need_secret(variable_name, prompt_text=""):
+    """Request a secret (API key, password, token) from the user mid-execution.
+
+    If the variable is already set in os.environ, returns immediately.
+    Otherwise, prompts the user via the parent process IPC, stores the
+    value in os.environ (and .anton/.env on the parent side), and returns.
+
+    The secret is NEVER returned as a value — access it via os.environ[variable_name].
+    """
+    # Fast path: already available
+    if os.environ.get(variable_name):
+        return
+
+    if not prompt_text:
+        prompt_text = f"Enter value for {variable_name}"
+
+    # Send request to parent via real stdout (bypasses cell capture)
+    request = json.dumps({"variable_name": variable_name, "prompt_text": prompt_text})
+    _real_stdout.write(f"{_NEED_SECRET_MARKER} {request}\n")
+    _real_stdout.flush()
+
+    # Block reading from real stdin until parent responds
+    for line in _real_stdin:
+        line = line.rstrip("\n")
+        if line.startswith(_SET_ENV_MARKER):
+            payload = json.loads(line[len(_SET_ENV_MARKER):].strip())
+            os.environ[payload["variable_name"]] = payload["value"]
+        elif line.startswith(_SECRET_DONE_MARKER):
+            rest = line[len(_SECRET_DONE_MARKER):].strip()
+            if rest == "error":
+                raise RuntimeError(
+                    f"Failed to get secret '{variable_name}': user did not provide a value"
+                )
+            return
+    # If we reach here, parent closed stdin unexpectedly
+    raise RuntimeError(f"Failed to get secret '{variable_name}': parent process closed connection")
+
+
+namespace["need_secret"] = need_secret
+
 
 # --- Variable inspector ---
 
