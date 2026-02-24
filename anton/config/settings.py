@@ -65,7 +65,3 @@ class AntonSettings(BaseSettings):
             self.memory_dir = str(base / self.memory_dir)
         if not Path(self.context_dir).is_absolute():
             self.context_dir = str(base / self.context_dir)
-
-        # Ensure .anton/ directory exists
-        anton_dir = base / ".anton"
-        anton_dir.mkdir(parents=True, exist_ok=True)

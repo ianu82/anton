@@ -185,6 +185,204 @@ def progress(message=""):
 
 namespace["progress"] = progress
 
+
+# --- Variable inspector ---
+
+def sample(var, mode="preview", _name=None):
+    """Inspect a variable with type-aware formatting.
+
+    Args:
+        var: The variable to inspect.
+        mode: "preview" (default) — compact summary. "full" — complete dump.
+        _name: Optional label printed as header (auto-detected when possible).
+
+    Prints formatted output to stdout (captured by the cell).
+    """
+    _MAX_PREVIEW = 2000
+    _MAX_FULL = 10000
+    limit = _MAX_PREVIEW if mode == "preview" else _MAX_FULL
+
+    header = f"[sample:{type(var).__name__}]"
+    if _name:
+        header = f"[sample:{_name} ({type(var).__name__})]"
+
+    lines = [header]
+
+    # --- pandas DataFrame ---
+    try:
+        import pandas as _pd
+        if isinstance(var, _pd.DataFrame):
+            lines.append(f"Shape: {var.shape[0]} rows x {var.shape[1]} cols")
+            lines.append(f"Columns: {list(var.columns)}")
+            lines.append(f"Dtypes:\n{var.dtypes.to_string()}")
+            if mode == "preview":
+                lines.append(f"\nHead (5 rows):\n{var.head().to_string()}")
+                if var.shape[0] > 5:
+                    lines.append(f"\nTail (3 rows):\n{var.tail(3).to_string()}")
+                nulls = var.isnull().sum()
+                nulls = nulls[nulls > 0]
+                if len(nulls) > 0:
+                    lines.append(f"\nNull counts:\n{nulls.to_string()}")
+            else:
+                lines.append(f"\nDescribe:\n{var.describe(include='all').to_string()}")
+                n = min(50, var.shape[0])
+                lines.append(f"\nFirst {n} rows:\n{var.head(n).to_string()}")
+                nulls = var.isnull().sum()
+                nulls = nulls[nulls > 0]
+                if len(nulls) > 0:
+                    lines.append(f"\nNull counts:\n{nulls.to_string()}")
+            print(_truncate_sample("\n".join(lines), limit))
+            return
+
+        if isinstance(var, _pd.Series):
+            lines.append(f"Length: {len(var)}, Dtype: {var.dtype}, Name: {var.name}")
+            if mode == "preview":
+                lines.append(f"\nHead (10):\n{var.head(10).to_string()}")
+            else:
+                lines.append(f"\nDescribe:\n{var.describe().to_string()}")
+                n = min(50, len(var))
+                lines.append(f"\nFirst {n}:\n{var.head(n).to_string()}")
+            print(_truncate_sample("\n".join(lines), limit))
+            return
+    except ImportError:
+        pass
+
+    # --- numpy array ---
+    try:
+        import numpy as _np
+        if isinstance(var, _np.ndarray):
+            lines.append(f"Shape: {var.shape}, Dtype: {var.dtype}")
+            if mode == "preview":
+                flat = var.flatten()
+                n = min(10, len(flat))
+                lines.append(f"First {n} values: {flat[:n].tolist()}")
+                if len(flat) > 10:
+                    lines.append(f"Last 3 values: {flat[-3:].tolist()}")
+                lines.append(f"Min: {var.min()}, Max: {var.max()}, Mean: {var.mean():.4g}")
+            else:
+                lines.append(f"Min: {var.min()}, Max: {var.max()}, Mean: {var.mean():.4g}, Std: {var.std():.4g}")
+                lines.append(f"\n{repr(var)}")
+            print(_truncate_sample("\n".join(lines), limit))
+            return
+    except ImportError:
+        pass
+
+    # --- dict ---
+    if isinstance(var, dict):
+        lines.append(f"Keys ({len(var)}): {list(var.keys())[:20]}")
+        if len(var) > 20:
+            lines[-1] += f" ... (+{len(var) - 20} more)"
+        if mode == "preview":
+            for i, (k, v) in enumerate(var.items()):
+                if i >= 10:
+                    lines.append(f"  ... ({len(var) - 10} more entries)")
+                    break
+                val_repr = repr(v)
+                if len(val_repr) > 120:
+                    val_repr = val_repr[:120] + "..."
+                lines.append(f"  {k!r}: {val_repr}")
+        else:
+            import json as _json
+            try:
+                lines.append(_json.dumps(var, indent=2, default=str))
+            except (TypeError, ValueError):
+                lines.append(repr(var))
+        print(_truncate_sample("\n".join(lines), limit))
+        return
+
+    # --- list / tuple ---
+    if isinstance(var, (list, tuple)):
+        kind = type(var).__name__
+        lines.append(f"Length: {len(var)}")
+        if len(var) > 0:
+            lines.append(f"Item types: {type(var[0]).__name__}" +
+                         (f" (mixed)" if len(var) > 1 and type(var[0]) != type(var[-1]) else ""))
+        if mode == "preview":
+            n = min(5, len(var))
+            for i in range(n):
+                val_repr = repr(var[i])
+                if len(val_repr) > 200:
+                    val_repr = val_repr[:200] + "..."
+                lines.append(f"  [{i}] {val_repr}")
+            if len(var) > 5:
+                lines.append(f"  ... ({len(var) - 5} more)")
+                val_repr = repr(var[-1])
+                if len(val_repr) > 200:
+                    val_repr = val_repr[:200] + "..."
+                lines.append(f"  [{len(var) - 1}] {val_repr}")
+        else:
+            for i, item in enumerate(var):
+                val_repr = repr(item)
+                if len(val_repr) > 500:
+                    val_repr = val_repr[:500] + "..."
+                lines.append(f"  [{i}] {val_repr}")
+        print(_truncate_sample("\n".join(lines), limit))
+        return
+
+    # --- set / frozenset ---
+    if isinstance(var, (set, frozenset)):
+        lines.append(f"Length: {len(var)}")
+        items = sorted(var, key=repr)
+        if mode == "preview":
+            for item in items[:10]:
+                lines.append(f"  {repr(item)}")
+            if len(items) > 10:
+                lines.append(f"  ... ({len(items) - 10} more)")
+        else:
+            for item in items:
+                lines.append(f"  {repr(item)}")
+        print(_truncate_sample("\n".join(lines), limit))
+        return
+
+    # --- str ---
+    if isinstance(var, str):
+        lines.append(f"Length: {len(var)}")
+        if mode == "preview":
+            preview = var[:500]
+            if len(var) > 500:
+                preview += f"\n... ({len(var) - 500} more chars)"
+            lines.append(preview)
+        else:
+            lines.append(var)
+        print(_truncate_sample("\n".join(lines), limit))
+        return
+
+    # --- bytes ---
+    if isinstance(var, bytes):
+        lines.append(f"Length: {len(var)} bytes")
+        if mode == "preview":
+            lines.append(repr(var[:200]))
+            if len(var) > 200:
+                lines.append(f"... ({len(var) - 200} more bytes)")
+        else:
+            lines.append(repr(var))
+        print(_truncate_sample("\n".join(lines), limit))
+        return
+
+    # --- fallback: any object ---
+    lines.append(f"Type: {type(var).__module__}.{type(var).__qualname__}")
+    # Show public attributes
+    attrs = [a for a in dir(var) if not a.startswith("_")]
+    if attrs:
+        lines.append(f"Attributes ({len(attrs)}): {attrs[:20]}")
+        if len(attrs) > 20:
+            lines[-1] += f" ... (+{len(attrs) - 20} more)"
+    r = repr(var)
+    if mode == "preview" and len(r) > 500:
+        r = r[:500] + "..."
+    lines.append(f"Repr: {r}")
+    print(_truncate_sample("\n".join(lines), limit))
+
+
+def _truncate_sample(text, max_chars):
+    """Truncate sample output to max_chars."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n... (truncated, {len(text)} chars total)"
+
+
+namespace["sample"] = sample
+
 # --- Logging capture ---
 # Libraries like httpx, urllib3, etc. use Python logging. By default these
 # messages are silently dropped (no handler configured). We set up a handler

@@ -668,3 +668,163 @@ class TestProgressAndTimeouts:
         total, inactivity = _compute_timeouts(1000)
         assert total == 2000.0
         assert inactivity == 60.0
+
+
+class TestSampleFunction:
+    async def test_sample_available_in_namespace(self):
+        """sample() should be callable in scratchpad code."""
+        pad = Scratchpad(name="sample-ns")
+        await pad.start()
+        try:
+            cell = await pad.execute("print(callable(sample))")
+            assert cell.error is None
+            assert cell.stdout.strip() == "True"
+        finally:
+            await pad.close()
+
+    async def test_sample_dict_preview(self):
+        """sample() on a dict should show keys and truncated values."""
+        pad = Scratchpad(name="sample-dict")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "d = {'name': 'Alice', 'age': 30, 'city': 'NYC'}\n"
+                "sample(d)"
+            )
+            assert cell.error is None
+            assert "[sample:dict]" in cell.stdout
+            assert "Keys (3)" in cell.stdout
+            assert "'name'" in cell.stdout
+            assert "'Alice'" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_list_preview(self):
+        """sample() on a list should show length and first/last items."""
+        pad = Scratchpad(name="sample-list")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "data = list(range(100))\n"
+                "sample(data)"
+            )
+            assert cell.error is None
+            assert "[sample:list]" in cell.stdout
+            assert "Length: 100" in cell.stdout
+            assert "[0]" in cell.stdout
+            assert "95 more" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_string_preview(self):
+        """sample() on a string should show length and a preview."""
+        pad = Scratchpad(name="sample-str")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "s = 'hello world' * 100\n"
+                "sample(s)"
+            )
+            assert cell.error is None
+            assert "[sample:str]" in cell.stdout
+            assert "Length: 1100" in cell.stdout
+            assert "hello world" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_full_mode(self):
+        """sample(var, mode='full') should show more content."""
+        pad = Scratchpad(name="sample-full")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "d = {f'key_{i}': i for i in range(20)}\n"
+                "sample(d, mode='full')"
+            )
+            assert cell.error is None
+            # Full mode uses json.dumps for dicts
+            assert '"key_0"' in cell.stdout
+            assert '"key_19"' in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_set(self):
+        """sample() on a set should show length and items."""
+        pad = Scratchpad(name="sample-set")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "s = {1, 2, 3, 4, 5}\n"
+                "sample(s)"
+            )
+            assert cell.error is None
+            assert "[sample:set]" in cell.stdout
+            assert "Length: 5" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_custom_object(self):
+        """sample() on an unknown object should show type and repr."""
+        pad = Scratchpad(name="sample-obj")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "class Foo:\n"
+                "    def __init__(self): self.x = 42\n"
+                "    def __repr__(self): return 'Foo(x=42)'\n"
+                "sample(Foo())"
+            )
+            assert cell.error is None
+            assert "[sample:Foo]" in cell.stdout
+            assert "Foo(x=42)" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_bytes(self):
+        """sample() on bytes should show length and preview."""
+        pad = Scratchpad(name="sample-bytes")
+        await pad.start()
+        try:
+            cell = await pad.execute("sample(b'hello world')")
+            assert cell.error is None
+            assert "[sample:bytes]" in cell.stdout
+            assert "Length: 11 bytes" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_named(self):
+        """sample() with _name parameter should include the label."""
+        pad = Scratchpad(name="sample-named")
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "x = [1, 2, 3]\n"
+                "sample(x, _name='my_list')"
+            )
+            assert cell.error is None
+            assert "my_list" in cell.stdout
+            assert "list" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_empty_dict(self):
+        """sample() on an empty dict should not crash."""
+        pad = Scratchpad(name="sample-empty")
+        await pad.start()
+        try:
+            cell = await pad.execute("sample({})")
+            assert cell.error is None
+            assert "Keys (0)" in cell.stdout
+        finally:
+            await pad.close()
+
+    async def test_sample_empty_list(self):
+        """sample() on an empty list should not crash."""
+        pad = Scratchpad(name="sample-empty-list")
+        await pad.start()
+        try:
+            cell = await pad.execute("sample([])")
+            assert cell.error is None
+            assert "Length: 0" in cell.stdout
+        finally:
+            await pad.close()

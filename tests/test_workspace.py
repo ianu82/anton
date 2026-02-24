@@ -30,7 +30,6 @@ class TestFolderStateChecks:
 
     def test_has_non_anton_files_ignores_anton_files(self, ws, tmp_path):
         (tmp_path / ".anton").mkdir()
-        (tmp_path / "anton.md").write_text("context")
         assert ws.has_non_anton_files() is False
 
     def test_has_non_anton_files_ignores_hidden_files(self, ws, tmp_path):
@@ -47,7 +46,8 @@ class TestFolderStateChecks:
 
     def test_needs_confirmation_non_empty_with_anton_md(self, ws, tmp_path):
         (tmp_path / "index.js").write_text("console.log('hi')")
-        (tmp_path / "anton.md").write_text("context")
+        (tmp_path / ".anton").mkdir()
+        (tmp_path / ".anton" / "anton.md").write_text("context")
         assert ws.needs_confirmation() is False
 
 
@@ -58,8 +58,8 @@ class TestInitialization:
 
     def test_creates_anton_md(self, ws, tmp_path):
         ws.initialize()
-        assert (tmp_path / "anton.md").is_file()
-        content = (tmp_path / "anton.md").read_text()
+        assert (tmp_path / ".anton" / "anton.md").is_file()
+        content = (tmp_path / ".anton" / "anton.md").read_text()
         assert "Anton Workspace" in content
 
     def test_creates_env_file(self, ws, tmp_path):
@@ -68,10 +68,10 @@ class TestInitialization:
 
     def test_idempotent(self, ws, tmp_path):
         ws.initialize()
-        (tmp_path / "anton.md").write_text("custom content")
+        (tmp_path / ".anton" / "anton.md").write_text("custom content")
         ws.initialize()
         # Should not overwrite existing anton.md
-        assert (tmp_path / "anton.md").read_text() == "custom content"
+        assert (tmp_path / ".anton" / "anton.md").read_text() == "custom content"
 
     def test_returns_actions(self, ws):
         actions = ws.initialize()
@@ -83,18 +83,21 @@ class TestAntonMd:
         assert ws.read_anton_md() is None
 
     def test_read_content(self, ws, tmp_path):
-        (tmp_path / "anton.md").write_text("project info")
+        (tmp_path / ".anton").mkdir(exist_ok=True)
+        (tmp_path / ".anton" / "anton.md").write_text("project info")
         assert ws.read_anton_md() == "project info"
 
     def test_tracked_read(self, ws, tmp_path):
-        (tmp_path / "anton.md").write_text("info")
+        (tmp_path / ".anton").mkdir(exist_ok=True)
+        (tmp_path / ".anton" / "anton.md").write_text("info")
         content = ws.read_anton_md_tracked()
         assert content == "info"
         # After tracked read, modified_since returns False (unless file changes)
         assert ws.anton_md_modified_since_last_read() is False
 
     def test_modified_since_first_read(self, ws, tmp_path):
-        (tmp_path / "anton.md").write_text("info")
+        (tmp_path / ".anton").mkdir(exist_ok=True)
+        (tmp_path / ".anton" / "anton.md").write_text("info")
         # Before any tracked read, should be True
         assert ws.anton_md_modified_since_last_read() is True
 
@@ -102,7 +105,8 @@ class TestAntonMd:
         assert ws.build_anton_md_context() == ""
 
     def test_build_context_with_content(self, ws, tmp_path):
-        (tmp_path / "anton.md").write_text("Uses Python 3.11 and pytest")
+        (tmp_path / ".anton").mkdir(exist_ok=True)
+        (tmp_path / ".anton" / "anton.md").write_text("Uses Python 3.11 and pytest")
         context = ws.build_anton_md_context()
         assert "Project Context" in context
         assert "Python 3.11" in context

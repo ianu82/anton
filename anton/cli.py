@@ -32,36 +32,59 @@ def _get_settings(ctx: typer.Context):
 
 
 def _ensure_workspace(settings) -> None:
-    """Check workspace state and initialize if needed."""
+    """Check workspace state and initialize if needed.
+
+    Boot logic:
+    1. If $PWD/.anton exists → use it (local project), boot straight away
+    2. If $HOME/.anton exists → use it (global project), boot straight away
+    3. Neither exists → ask user: new local project or global project
+    """
     from anton.workspace import Workspace
 
-    ws = Workspace(settings.workspace_path)
+    local_path = settings.workspace_path
+    global_path = Path.home()
 
-    # Apply existing .env variables to process
-    ws.apply_env_to_process()
+    local_ws = Workspace(local_path)
+    global_ws = Workspace(global_path)
 
-    if ws.is_initialized():
+    # 1. Local .anton exists → use it
+    if local_ws.is_initialized():
+        local_ws.apply_env_to_process()
         return
 
-    if ws.needs_confirmation():
-        console.print()
-        console.print(
-            "[anton.warning]This folder already contains files that aren't part of Anton.[/]"
-        )
-        console.print(f"[dim]  Folder: {settings.workspace_path}[/]")
-        console.print()
-        if not Confirm.ask(
-            "Initialize Anton workspace here?",
-            default=True,
-            console=console,
-        ):
-            raise typer.Exit(0)
+    # 2. Global ~/.anton exists and we're not already pointing at $HOME → use it
+    if local_path != global_path and global_ws.is_initialized():
+        settings.resolve_workspace(str(global_path))
+        global_ws.apply_env_to_process()
+        return
+
+    # 3. Neither exists → ask user
+    console.print()
+    cwd_display = str(local_path)
+    console.print("[anton.cyan]Where should Anton store its data?[/]")
+    console.print(f"  [bold]1[/]  This folder  [dim]({cwd_display}/.anton)[/]")
+    console.print(f"  [bold]2[/]  Global        [dim](~/.anton)[/]")
+    console.print()
+    choice = Prompt.ask(
+        "Select",
+        choices=["1", "2"],
+        default="1",
+        console=console,
+    )
+
+    if choice == "1":
+        console.print(f"[anton.muted]  Creating project workspace in {cwd_display}/.anton[/]")
+        ws = local_ws
+    else:
+        console.print(f"[anton.muted]  Creating global workspace in ~/.anton[/]")
+        settings.resolve_workspace(str(global_path))
+        ws = global_ws
 
     actions = ws.initialize()
     for action in actions:
         console.print(f"[anton.muted]  {action}[/]")
-    if actions:
-        console.print()
+    ws.apply_env_to_process()
+    console.print()
 
 
 @app.callback(invoke_without_command=True)

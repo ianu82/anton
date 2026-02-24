@@ -58,7 +58,6 @@ class TestWorkspaceResolution:
         assert s.workspace_path == tmp_path
         assert Path(s.memory_dir) == tmp_path / ".anton"
         assert Path(s.context_dir) == tmp_path / ".anton" / "context"
-        assert (tmp_path / ".anton").is_dir()
 
     def test_resolve_workspace_with_explicit_folder(self, tmp_path):
         s = AntonSettings(anthropic_api_key="test", _env_file=None)
@@ -67,14 +66,13 @@ class TestWorkspaceResolution:
         assert s.workspace_path == tmp_path
         assert Path(s.memory_dir) == tmp_path / ".anton"
         assert Path(s.context_dir) == tmp_path / ".anton" / "context"
-        assert (tmp_path / ".anton").is_dir()
 
-    def test_resolve_workspace_creates_anton_dir(self, tmp_path):
+    def test_resolve_workspace_does_not_create_anton_dir(self, tmp_path):
+        """resolve_workspace only resolves paths — directory creation is deferred to initialize()."""
         s = AntonSettings(anthropic_api_key="test", _env_file=None)
         s.resolve_workspace(str(tmp_path))
 
-        assert (tmp_path / ".anton").exists()
-        assert (tmp_path / ".anton").is_dir()
+        assert not (tmp_path / ".anton").exists()
 
     def test_resolve_workspace_preserves_absolute_paths(self, tmp_path):
         s = AntonSettings(

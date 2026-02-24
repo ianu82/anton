@@ -28,7 +28,7 @@ class Workspace:
     def __init__(self, base: Path) -> None:
         self._base = base
         self._anton_dir = base / ".anton"
-        self._anton_md = base / "anton.md"
+        self._anton_md = self._anton_dir / "anton.md"
         self._env_file = self._anton_dir / ".env"
         self._anton_md_last_read: datetime | None = None
 
@@ -57,7 +57,7 @@ class Workspace:
         for item in self._base.iterdir():
             name = item.name
             # Skip Anton's own files/dirs
-            if name in (".anton", "anton.md", ".env"):
+            if name in (".anton", ".env"):
                 continue
             # Skip common hidden files
             if name.startswith("."):
@@ -128,7 +128,7 @@ class Workspace:
 
         return (
             "\n\n## Project Context (anton.md)\n"
-            "The following was written by the user in anton.md at the workspace root:\n\n"
+            "The following was written by the user in .anton/anton.md:\n\n"
             f"{content.strip()}\n"
         )
 
