@@ -421,6 +421,31 @@ def progress(message=""):
 
 namespace["progress"] = progress
 
+# --- Logging capture ---
+# Libraries like httpx, urllib3, etc. use Python logging. By default these
+# messages are silently dropped (no handler configured). We set up a handler
+# that writes to a per-cell StringIO so the LLM can see connection info,
+# warnings, and errors from libraries.
+import logging as _logging
+
+class _CellLogHandler(_logging.Handler):
+    """Logging handler that writes to whichever StringIO is current."""
+    def __init__(self):
+        super().__init__(level=_logging.INFO)
+        self.buf = None
+        self.setFormatter(_logging.Formatter("%(name)s: %(message)s"))
+
+    def emit(self, record):
+        if self.buf is not None:
+            try:
+                self.buf.write(self.format(record) + "\n")
+            except Exception:
+                pass
+
+_cell_log_handler = _CellLogHandler()
+_logging.root.addHandler(_cell_log_handler)
+_logging.root.setLevel(_logging.INFO)
+
 while True:
     lines = []
     try:
@@ -437,7 +462,7 @@ while True:
 
     code = "".join(lines)
     if not code.strip():
-        result = {"stdout": "", "stderr": "", "error": None}
+        result = {"stdout": "", "stderr": "", "logs": "", "error": None}
         _real_stdout.write(_RESULT_START + "\n")
         _real_stdout.write(json.dumps(result) + "\n")
         _real_stdout.write(_RESULT_END + "\n")
@@ -446,7 +471,9 @@ while True:
 
     out_buf = io.StringIO()
     err_buf = io.StringIO()
+    log_buf = io.StringIO()
     error = None
+    _cell_log_handler.buf = log_buf
 
     sys.stdout = out_buf
     sys.stderr = err_buf
@@ -459,6 +486,7 @@ while True:
         if _missing:
             sys.stdout = _real_stdout
             sys.stderr = sys.__stderr__
+            _cell_log_handler.buf = None
             _real_stdout.write(_PROGRESS_MARKER + " " + f"Installing {_missing}..." + "\n")
             _real_stdout.flush()
             import subprocess as _sp
@@ -476,6 +504,8 @@ while True:
             # Reset buffers and retry
             out_buf = io.StringIO()
             err_buf = io.StringIO()
+            log_buf = io.StringIO()
+            _cell_log_handler.buf = log_buf
             sys.stdout = out_buf
             sys.stderr = err_buf
             if _pip.returncode == 0:
@@ -495,10 +525,12 @@ while True:
     finally:
         sys.stdout = _real_stdout
         sys.stderr = sys.__stderr__
+        _cell_log_handler.buf = None
 
     result = {
         "stdout": out_buf.getvalue(),
         "stderr": err_buf.getvalue(),
+        "logs": log_buf.getvalue(),
         "error": error,
     }
     _real_stdout.write(_RESULT_START + "\n")
@@ -520,6 +552,7 @@ class Cell:
     error: str | None
     description: str = ""
     estimated_time: str = ""
+    logs: str = ""
 
 
 @dataclass
@@ -815,6 +848,7 @@ class Scratchpad:
             error=result_data.get("error"),
             description=description,
             estimated_time=estimated_time,
+            logs=result_data.get("logs", ""),
         )
         self.cells.append(cell)
         yield cell
@@ -901,12 +935,14 @@ class Scratchpad:
             parts.append(header)
             parts.append(cell.code)
             if cell.stdout:
-                parts.append(f"[stdout]\n{cell.stdout}")
+                parts.append(f"[output]\n{cell.stdout}")
+            if cell.logs:
+                parts.append(f"[logs]\n{cell.logs}")
             if cell.stderr:
                 parts.append(f"[stderr]\n{cell.stderr}")
             if cell.error:
                 parts.append(f"[error]\n{cell.error}")
-            if not cell.stdout and not cell.stderr and not cell.error:
+            if not cell.stdout and not cell.logs and not cell.stderr and not cell.error:
                 parts.append("(no output)")
         return "\n".join(parts)
 
@@ -958,9 +994,17 @@ class Scratchpad:
                 # Show only the last traceback line
                 last_line = cell.error.strip().split("\n")[-1]
                 parts.append(f"**Error:** `{last_line}`")
+                # If there was partial output before the error, show it
+                if cell.stdout:
+                    truncated = self._truncate_output(cell.stdout.rstrip("\n"))
+                    parts.append(f"**Partial output:**\n```\n{truncated}\n```\n")
             elif cell.stdout:
                 truncated = self._truncate_output(cell.stdout.rstrip("\n"))
                 parts.append(f"**Output:**\n```\n{truncated}\n```\n")
+
+            if cell.logs:
+                truncated_logs = self._truncate_output(cell.logs.rstrip("\n"), max_lines=10, max_chars=1000)
+                parts.append(f"**Logs:**\n```\n{truncated_logs}\n```\n")
 
             if i < len(numbered) - 1:
                 parts.append("---")

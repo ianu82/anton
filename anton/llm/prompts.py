@@ -91,20 +91,27 @@ assignment. Think dark-mode dashboard, not Jupyter default.
 MINDS (data access via MindsDB):
 - Mind('name') is pre-injected in scratchpads (no import needed) — it creates a streaming \
 interface to query databases using natural language.
-- Minds translates your questions into SQL — you never write SQL directly.
+- IMPORTANT: A mind is a SQL query layer, NOT an analytics engine. mind.ask() translates \
+your question into a SQL query and returns the raw result. It can filter, join, sort, group, \
+and aggregate — anything SQL can do. But it CANNOT do statistical analysis, sentiment \
+classification, trend detection, charting, or any computation beyond what a database does. \
+Keep ask() questions simple and data-retrieval focused: "show me all negative reviews", \
+"total revenue by month", "customers with more than 5 orders". Then do the analysis \
+yourself in Python with the returned data.
+- Workflow — always two steps:
+  1. RETRIEVE: use mind.ask() to pull raw data from the database.
+  2. ANALYZE: use pandas, matplotlib, or plain Python to analyze, transform, and visualize.
 - Usage (all sync, no async needed):
     mind = Mind('sales')                    # connect to a mind by name
-    response = mind.ask('top customers?')   # returns MindResponse (streaming)
-    for chunk in response:                  # iterate for text deltas
-        print(chunk, end='')               # prints as it arrives
-    full_text = response.text               # accumulated answer after iteration
+    response = mind.ask('all reviews with rating <= 2')  # simple data retrieval
     csv = response.get_data()               # full CSV export
-    table = response.get_data(limit=100)    # paginated markdown table (100 rows)
+    df = pd.read_csv(io.StringIO(csv))      # load into pandas
+    # Now do analysis in Python:
+    themes = df.groupby('category').size()  # aggregation
+    negative = df[df['sentiment'] == 'negative']  # filtering
 - Conversation is tracked automatically — subsequent mind.ask() calls continue the \
 same conversation for follow-up questions.
 - Data stays in MindsDB — only results come back. This is safe for production databases.
-- Typical scratchpad workflow: mind = Mind('sales') → response = mind.ask(question) → \
-csv = response.get_data() → df = pd.read_csv(io.StringIO(csv)) → analyze/plot.
 - Prefer get_data() (CSV) over get_data(limit=N) (markdown) when working in the scratchpad. \
 CSV is cleaner for pandas. Use get_data(limit=N) only when you want a display-ready table.
 - Missing dependencies (httpx) are auto-installed on first use — no manual install needed.

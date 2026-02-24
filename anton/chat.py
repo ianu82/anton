@@ -114,13 +114,15 @@ SCRATCHPAD_TOOL = {
         "All .anton/.env secrets are available as environment variables (os.environ).\n"
         "Mind('name') creates a streaming database query interface — this is the ONLY "
         "way to query connected databases. It is pre-injected (no import needed).\n"
-        "  mind = Mind('sales')                    # connect to a mind\n"
-        "  response = mind.ask('top customers?')   # returns MindResponse\n"
-        "  for chunk in response:                  # iterate for streaming text\n"
-        "      print(chunk, end='')                # prints as it arrives\n"
-        "  full_text = response.text               # accumulated answer after iteration\n"
-        "  csv = response.get_data()               # full CSV export (for pd.read_csv)\n"
-        "  table = response.get_data(limit=100)    # paginated markdown table\n"
+        "A mind is a SQL query layer — mind.ask() translates questions into SQL. "
+        "Keep questions data-retrieval focused (filter, join, sort, aggregate). "
+        "Any further analysis (stats, classification, visualization) must happen "
+        "in Python after retrieving the data.\n"
+        "  mind = Mind('sales')                              # connect to a mind\n"
+        "  response = mind.ask('all orders this quarter')    # simple data query\n"
+        "  csv = response.get_data()                         # full CSV export\n"
+        "  df = pd.read_csv(io.StringIO(csv))                # load into pandas\n"
+        "  # Now analyze in Python: df.groupby(...), df.plot(), etc.\n"
         "Follow-ups are automatic — subsequent mind.ask() calls continue the conversation. "
         "Missing dependencies (httpx) are auto-installed on first use.\n\n"
         "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
@@ -391,13 +393,25 @@ class ChatSession:
 
     @staticmethod
     def _format_cell_result(cell) -> str:
-        """Format a Cell into a tool result string."""
+        """Format a Cell into a tool result string.
+
+        Every section is labeled so the LLM can tell what came from where:
+        [output] — print() / stdout from the cell code
+        [logs]   — library logging (httpx, urllib3, etc.) captured at INFO+
+        [stderr] — warnings and stderr writes
+        [error]  — Python traceback if the cell raised an exception
+        """
         parts: list[str] = []
         if cell.stdout:
             stdout = cell.stdout
             if len(stdout) > 10_000:
                 stdout = stdout[:10_000] + f"\n\n... (truncated, {len(stdout)} chars total)"
-            parts.append(stdout)
+            parts.append(f"[output]\n{stdout}")
+        if cell.logs if hasattr(cell, "logs") else False:
+            logs = cell.logs.strip()
+            if len(logs) > 3_000:
+                logs = logs[:3_000] + "\n... (logs truncated)"
+            parts.append(f"[logs]\n{logs}")
         if cell.stderr:
             parts.append(f"[stderr]\n{cell.stderr}")
         if cell.error:
