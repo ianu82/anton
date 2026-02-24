@@ -33,11 +33,11 @@ class TestMindsClientAsk:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {
-            "id": "msg_123",
-            "conversation_id": "conv_456",
+            "id": "resp-123",
             "output": [
                 {
                     "type": "message",
+                    "id": "msg_123",
                     "content": [
                         {"type": "output_text", "text": "The top customer is Acme Corp."}
                     ],
@@ -45,12 +45,22 @@ class TestMindsClientAsk:
             ],
         }
 
+        # Mock the conversations lookup
+        mock_conv_response = MagicMock()
+        mock_conv_response.status_code = 200
+        mock_conv_response.json.return_value = [{"id": "conv_456"}]
+
         mock_http_client = AsyncMock()
         mock_http_client.post = AsyncMock(return_value=mock_response)
         mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
         mock_http_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_http_client):
+        mock_conv_client = AsyncMock()
+        mock_conv_client.get = AsyncMock(return_value=mock_conv_response)
+        mock_conv_client.__aenter__ = AsyncMock(return_value=mock_conv_client)
+        mock_conv_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", side_effect=[mock_http_client, mock_conv_client]):
             result = await client.ask("Who is the top customer?", "sales")
 
         assert result == "The top customer is Acme Corp."
@@ -67,15 +77,17 @@ class TestMindsClientAsk:
 
     async def test_ask_with_conversation_id(self):
         client = MindsClient(api_key="test-key")
+        # Pre-set conversation_id so it won't call conversations endpoint
+        client._last_conversation_id = "conv_existing"
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {
-            "id": "msg_2",
-            "conversation_id": "conv_existing",
+            "id": "resp-2",
             "output": [
                 {
                     "type": "message",
+                    "id": "msg_2",
                     "content": [{"type": "output_text", "text": "Follow-up answer."}],
                 }
             ],
@@ -492,8 +504,13 @@ class TestMind:
 
 
 class TestMindResponse:
-    def _make_response(self, lines, mind=None):
-        """Helper to create a MindResponse with mock SSE lines."""
+    def _make_response(self, lines, mind=None, mock_conv_id="c1"):
+        """Helper to create a MindResponse with mock SSE lines.
+
+        Args:
+            mock_conv_id: conversation_id returned by the mocked conversations
+                endpoint. Set to None to simulate lookup failure.
+        """
         if mind is None:
             with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
                 mind = Mind("test")
@@ -505,13 +522,38 @@ class TestMindResponse:
         mock_client = MagicMock()
         mock_client.close = MagicMock()
 
-        return MindResponse(client=mock_client, response=mock_http_response, mind=mind)
+        resp = MindResponse(client=mock_client, response=mock_http_response, mind=mind)
+
+        # Patch _resolve_conversation_id to avoid real HTTP calls
+        if mock_conv_id is not None:
+            original_resolve = resp._resolve_conversation_id
+            def _mock_resolve():
+                resp.conversation_id = mock_conv_id
+            resp._resolve_conversation_id = _mock_resolve
+
+        return resp
+
+    def _completed_event(self, msg_id="m1"):
+        """Build a realistic response.completed SSE line (no conversation_id)."""
+        import json
+        event = {
+            "type": "response.completed",
+            "response": {
+                "id": f"resp-{msg_id}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "id": msg_id, "status": "completed"}
+                ],
+            },
+        }
+        return f"data: {json.dumps(event)}"
 
     def test_iteration_yields_deltas(self):
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "Hello"}',
             'data: {"type": "response.output_text.delta", "delta": " world"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines)
         chunks = list(resp)
@@ -521,7 +563,7 @@ class TestMindResponse:
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "Hello"}',
             'data: {"type": "response.output_text.delta", "delta": " world"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines)
         list(resp)  # drain
@@ -530,17 +572,16 @@ class TestMindResponse:
     def test_completed_flag_set(self):
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "Hi"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines)
         list(resp)
         assert resp.completed is True
 
     def test_ids_extracted_from_completed(self):
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "conv_99", "id": "msg_42"}}',
-        ]
-        resp = self._make_response(lines)
+        """message_id comes from output[0].id, conversation_id from API lookup."""
+        lines = [self._completed_event(msg_id="msg_42")]
+        resp = self._make_response(lines, mock_conv_id="conv_99")
         list(resp)
         assert resp.conversation_id == "conv_99"
         assert resp.message_id == "msg_42"
@@ -550,10 +591,8 @@ class TestMindResponse:
             mind = Mind("sales")
         assert mind._conversation_id is None
 
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "conv_new", "id": "m1"}}',
-        ]
-        resp = self._make_response(lines, mind=mind)
+        lines = [self._completed_event()]
+        resp = self._make_response(lines, mind=mind, mock_conv_id="conv_new")
         list(resp)
         assert mind._conversation_id == "conv_new"
 
@@ -562,7 +601,7 @@ class TestMindResponse:
             "event: ping",
             "",
             'data: {"type": "response.output_text.delta", "delta": "OK"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines)
         chunks = list(resp)
@@ -572,7 +611,7 @@ class TestMindResponse:
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "Hi"}',
             "data: [DONE]",
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines)
         chunks = list(resp)
@@ -583,9 +622,7 @@ class TestMindResponse:
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
-        ]
+        lines = [self._completed_event()]
         resp = self._make_response(lines, mind=mind)
         list(resp)  # drain
 
@@ -612,9 +649,7 @@ class TestMindResponse:
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
-        ]
+        lines = [self._completed_event()]
         resp = self._make_response(lines, mind=mind)
         list(resp)  # drain
 
@@ -640,9 +675,7 @@ class TestMindResponse:
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
-        ]
+        lines = [self._completed_event()]
         resp = self._make_response(lines, mind=mind)
         list(resp)
 
@@ -666,7 +699,6 @@ class TestMindResponse:
 
         assert "| name |" in result
         assert "Acme" in result
-        # Should have called export first, then result
         assert mock_data_client.get.call_count == 2
         assert "/export" in mock_data_client.get.call_args_list[0][0][0]
         assert "/result" in mock_data_client.get.call_args_list[1][0][0]
@@ -678,7 +710,7 @@ class TestMindResponse:
 
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "Hi"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines, mind=mind)
         # NOT calling list(resp) — get_data should auto-drain
@@ -719,9 +751,7 @@ class TestMindResponse:
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        lines = [
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
-        ]
+        lines = [self._completed_event()]
         resp = self._make_response(lines, mind=mind)
         list(resp)
 
@@ -750,7 +780,7 @@ class TestMindResponse:
         lines = [
             'data: {"type": "response.output_text.delta", "delta": "auto "}',
             'data: {"type": "response.output_text.delta", "delta": "drained"}',
-            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+            self._completed_event(),
         ]
         resp = self._make_response(lines, mind=mind)
         # Do NOT iterate — just access .text directly
@@ -758,29 +788,72 @@ class TestMindResponse:
         assert resp.completed is True
 
     def test_get_data_raises_on_none_conversation_id(self):
-        """get_data() should raise clear error when conversation_id is None."""
+        """get_data() should raise clear error when conversation_id lookup fails."""
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        # completed event with no conversation_id
-        lines = [
-            'data: {"type": "response.completed", "response": {"id": "msg_1"}}',
-        ]
-        resp = self._make_response(lines, mind=mind)
+        lines = [self._completed_event()]
+        # mock_conv_id=None simulates failed conversation lookup
+        resp = self._make_response(lines, mind=mind, mock_conv_id=None)
         list(resp)
 
         with pytest.raises(RuntimeError, match="conversation_id=None"):
             resp.get_data()
 
-    def test_conversation_id_extracted_from_event_root(self):
-        """conversation_id should be found at event root if not in response obj."""
+    def test_message_id_from_output(self):
+        """message_id should come from response.output[0].id, not response.id."""
+        import json as _json
         with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
             mind = Mind("sales")
 
-        lines = [
-            'data: {"type": "response.completed", "conversation_id": "conv_root", "response": {"id": "m1"}}',
-        ]
+        event = {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-should-not-use-this",
+                "output": [
+                    {"type": "message", "id": "correct-uuid-123"}
+                ],
+            },
+        }
+        lines = [f"data: {_json.dumps(event)}"]
         resp = self._make_response(lines, mind=mind)
         list(resp)
-        assert resp.conversation_id == "conv_root"
-        assert resp.message_id == "m1"
+        assert resp.message_id == "correct-uuid-123"
+
+    def test_resolve_conversation_id_via_api(self):
+        """conversation_id should be resolved via GET /api/v1/conversations."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [self._completed_event()]
+        # Don't mock _resolve — let it try to call the real method
+        resp = self._make_response(lines, mind=mind, mock_conv_id=None)
+
+        # Mock the HTTP call that _resolve_conversation_id makes
+        mock_conv_resp = MagicMock()
+        mock_conv_resp.status_code = 200
+        mock_conv_resp.json.return_value = [{"id": "looked-up-conv-id"}]
+
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_conv_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_client):
+            list(resp)
+
+        assert resp.conversation_id == "looked-up-conv-id"
+
+    def test_format_table_handles_nested_result_key(self):
+        """_format_table should handle the {result: {column_names, data}} structure."""
+        data = {
+            "result": {
+                "column_names": ["x", "y"],
+                "data": [[1, 2], [3, 4]],
+            },
+            "total": 2,
+        }
+        result = MindsClient._format_table(data)
+        assert "| x | y |" in result
+        assert "| 1 | 2 |" in result
+        assert "| 3 | 4 |" in result

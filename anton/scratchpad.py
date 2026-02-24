@@ -264,21 +264,40 @@ if _minds_api_key:
                         self._text += delta
                         yield delta
                 elif etype == "response.completed":
-                    # Extract IDs — check multiple locations since the API
-                    # structure may nest them differently
                     resp_obj = event.get("response", {})
-                    self.conversation_id = (
-                        resp_obj.get("conversation_id")
-                        or event.get("conversation_id")
-                    )
-                    self.message_id = (
-                        resp_obj.get("id")
-                        or event.get("id")
-                    )
+                    # message_id is output[0].id (assistant message UUID),
+                    # NOT response.id (which has a resp- prefix the API rejects)
+                    output = resp_obj.get("output", [])
+                    if output:
+                        self.message_id = output[0].get("id")
                     self.completed = True
-                    if self.conversation_id:
-                        self._mind._conversation_id = self.conversation_id
             self._drained = True
+
+            # conversation_id is NOT returned in the response payload.
+            # Look it up via the conversations list endpoint (most recent first).
+            if self.completed and not self.conversation_id:
+                self._resolve_conversation_id()
+            if self.conversation_id:
+                self._mind._conversation_id = self.conversation_id
+
+        def _resolve_conversation_id(self):
+            """Fetch the most recent conversation ID from the API."""
+            import httpx
+            headers = {
+                "Authorization": f"Bearer {self._mind._api_key}",
+                "Content-Type": "application/json",
+            }
+            try:
+                with httpx.Client(
+                    base_url=self._mind._base_url, timeout=15, follow_redirects=True,
+                ) as client:
+                    resp = client.get("/api/v1/conversations", headers=headers)
+                    if resp.status_code < 400:
+                        convos = resp.json()
+                        if convos and isinstance(convos, list):
+                            self.conversation_id = convos[0].get("id")
+            except Exception:
+                pass  # non-fatal — get_data() will raise with a clear message
 
         def _close(self):
             try:
@@ -299,6 +318,9 @@ if _minds_api_key:
 
         @staticmethod
         def _format_table(data):
+            # The result endpoint wraps data in a "result" key
+            if "result" in data and isinstance(data["result"], dict):
+                data = data["result"]
             columns = data.get("column_names", [])
             rows = data.get("data", [])
             if not columns:

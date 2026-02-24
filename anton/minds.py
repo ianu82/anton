@@ -64,8 +64,21 @@ class MindsClient:
             data = resp.json()
 
         # Store IDs for subsequent data() calls
-        self._last_conversation_id = data.get("conversation_id")
-        self._last_message_id = data.get("id")
+        # message_id is output[0].id (assistant message UUID), not response.id
+        output = data.get("output", [])
+        if output:
+            self._last_message_id = output[0].get("id")
+        # conversation_id not returned in response — look it up
+        if not self._last_conversation_id:
+            try:
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=15, follow_redirects=True) as client2:
+                    conv_resp = await client2.get("/api/v1/conversations", headers=self._headers())
+                    if conv_resp.status_code < 400:
+                        convos = conv_resp.json()
+                        if convos and isinstance(convos, list):
+                            self._last_conversation_id = convos[0].get("id")
+            except Exception:
+                pass
 
         # Extract text output
         output_parts: list[str] = []
@@ -127,8 +140,23 @@ class MindsClient:
                             yield delta
                     elif etype == "response.completed":
                         resp_obj = event.get("response", {})
-                        self._last_conversation_id = resp_obj.get("conversation_id")
-                        self._last_message_id = resp_obj.get("id")
+                        # message_id is output[0].id (assistant message UUID)
+                        output = resp_obj.get("output", [])
+                        if output:
+                            self._last_message_id = output[0].get("id")
+                        # conversation_id not in response — look it up
+                        if not self._last_conversation_id:
+                            try:
+                                conv_resp = await client.get(
+                                    "/api/v1/conversations",
+                                    headers=self._headers(),
+                                )
+                                if conv_resp.status_code < 400:
+                                    convos = conv_resp.json()
+                                    if convos and isinstance(convos, list):
+                                        self._last_conversation_id = convos[0].get("id")
+                            except Exception:
+                                pass
 
     async def data(self, limit: int = 100, offset: int = 0) -> str:
         """Fetch raw tabular results from the last ask() call.
@@ -248,6 +276,9 @@ class MindsClient:
     @staticmethod
     def _format_table(data: dict) -> str:
         """Format a result payload as a markdown table."""
+        # The result endpoint wraps data in a "result" key
+        if "result" in data and isinstance(data["result"], dict):
+            data = data["result"]
         columns: list[str] = data.get("column_names", [])
         rows: list[list] = data.get("data", [])
 
@@ -351,21 +382,41 @@ class MindResponse:
                     self._text += delta
                     yield delta
             elif etype == "response.completed":
-                # Extract IDs — check multiple locations since the API
-                # structure may nest them differently
                 resp_obj = event.get("response", {})
-                self.conversation_id = (
-                    resp_obj.get("conversation_id")
-                    or event.get("conversation_id")
-                )
-                self.message_id = (
-                    resp_obj.get("id")
-                    or event.get("id")
-                )
+                # message_id is output[0].id (the assistant message UUID),
+                # NOT response.id (which has a resp- prefix the API rejects)
+                output = resp_obj.get("output", [])
+                if output:
+                    self.message_id = output[0].get("id")
                 self.completed = True
-                if self.conversation_id:
-                    self._mind._conversation_id = self.conversation_id
         self._drained = True
+
+        # conversation_id is NOT returned in the response payload.
+        # Look it up via the conversations list endpoint (most recent first).
+        if self.completed and not self.conversation_id:
+            self._resolve_conversation_id()
+        if self.conversation_id:
+            self._mind._conversation_id = self.conversation_id
+
+    def _resolve_conversation_id(self) -> None:
+        """Fetch the most recent conversation ID from the API."""
+        import httpx
+
+        headers = {
+            "Authorization": f"Bearer {self._mind._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(
+                base_url=self._mind._base_url, timeout=15, follow_redirects=True,
+            ) as client:
+                resp = client.get("/api/v1/conversations", headers=headers)
+                if resp.status_code < 400:
+                    convos = resp.json()
+                    if convos and isinstance(convos, list):
+                        self.conversation_id = convos[0].get("id")
+        except Exception:
+            pass  # non-fatal — get_data() will raise with a clear message
 
     def _close(self) -> None:
         try:
