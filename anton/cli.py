@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import typer
@@ -9,6 +10,125 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from anton import __version__
+
+
+# ---------------------------------------------------------------------------
+# Dependency checking — runs before anything that needs the heavy imports
+# ---------------------------------------------------------------------------
+
+# Core dependencies from pyproject.toml that anton needs at runtime
+_REQUIRED_PACKAGES: dict[str, str] = {
+    "anthropic": "anthropic>=0.42.0",
+    "openai": "openai>=1.0",
+    "pydantic": "pydantic>=2.0",
+    "pydantic_settings": "pydantic-settings>=2.0",
+    "prompt_toolkit": "prompt-toolkit>=3.0",
+}
+# typer and rich are already imported above — if they were missing we'd
+# never reach this point, so no need to check them.
+
+
+def _check_dependencies() -> list[str]:
+    """Return list of missing package install specs."""
+    import importlib
+
+    missing: list[str] = []
+    for module_name, install_spec in _REQUIRED_PACKAGES.items():
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing.append(install_spec)
+    return missing
+
+
+def _find_uv() -> str | None:
+    """Find the uv binary."""
+    import shutil
+
+    uv = shutil.which("uv")
+    if uv:
+        return uv
+
+    if sys.platform == "win32":
+        candidates = (
+            os.path.expanduser("~/.local/bin/uv.exe"),
+            os.path.expanduser("~/.cargo/bin/uv.exe"),
+        )
+    else:
+        candidates = (
+            os.path.expanduser("~/.local/bin/uv"),
+            os.path.expanduser("~/.cargo/bin/uv"),
+        )
+
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _ensure_dependencies(console: Console) -> None:
+    """Check for missing dependencies and offer to install them."""
+    missing = _check_dependencies()
+    if not missing:
+        return
+
+    console.print()
+    console.print("[anton.warning]Missing dependencies detected:[/]")
+    for pkg in missing:
+        console.print(f"  [bold]- {pkg}[/]")
+    console.print()
+
+    # Check if install script is available locally (dev checkout)
+    repo_root = Path(__file__).resolve().parent.parent
+    if sys.platform == "win32":
+        install_script = repo_root / "install.ps1"
+    else:
+        install_script = repo_root / "install.sh"
+    uv = _find_uv()
+
+    if uv:
+        if Confirm.ask(
+            f"Install missing packages with uv?",
+            default=True,
+            console=console,
+        ):
+            import subprocess
+
+            console.print(f"[anton.muted]  Running: uv pip install {' '.join(missing)}[/]")
+            result = subprocess.run(
+                [uv, "pip", "install", "--python", sys.executable, *missing],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                console.print("[anton.success]  Dependencies installed.[/]")
+                console.print("[anton.muted]  Please restart anton.[/]")
+            else:
+                console.print(f"[anton.error]  Install failed:[/]")
+                console.print(result.stderr.decode() if result.stderr else result.stdout.decode())
+                if install_script.is_file():
+                    if sys.platform == "win32":
+                        console.print(f"\n[anton.muted]  Or run the install script: powershell -File {install_script}[/]")
+                    else:
+                        console.print(f"\n[anton.muted]  Or run the install script: sh {install_script}[/]")
+            raise typer.Exit(0)
+    elif install_script.is_file():
+        console.print(f"To install all dependencies, run:")
+        if sys.platform == "win32":
+            console.print(f"  [bold]powershell -File {install_script}[/]")
+        else:
+            console.print(f"  [bold]sh {install_script}[/]")
+        console.print()
+        raise typer.Exit(1)
+    else:
+        console.print("To install missing dependencies, run:")
+        console.print(f"  [bold]pip install {' '.join(missing)}[/]")
+        console.print()
+        if sys.platform == "win32":
+            console.print("[anton.muted]Or reinstall anton: irm https://raw.githubusercontent.com/mindsdb/anton/main/install.ps1 | iex[/]")
+        else:
+            console.print("[anton.muted]Or reinstall anton: curl -sSf https://raw.githubusercontent.com/mindsdb/anton/main/install.sh | sh[/]")
+        console.print()
+        raise typer.Exit(1)
 
 app = typer.Typer(
     name="anton",
@@ -95,6 +215,8 @@ def main(
     ),
 ) -> None:
     """Anton — a self-evolving autonomous system."""
+    _ensure_dependencies(console)
+
     from anton.config.settings import AntonSettings
 
     settings = AntonSettings()

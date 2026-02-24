@@ -116,36 +116,71 @@ else {
 }
 
 # ── 6. Configure firewall for scratchpad internet access ──────────
-#    Anton's scratchpad runs Python in a venv at ~/.anton/scratchpad-venv.
-#    Windows Firewall blocks new executables by default, so we add a rule.
-$scratchpadPython = Join-Path $HOME ".anton\scratchpad-venv\Scripts\python.exe"
+#    Anton's scratchpads run Python in per-scratchpad venvs under
+#    ~/.anton/scratchpad-venvs/<name>/Scripts/python.exe.
+#    Windows Firewall blocks new executables by default, so we add a
+#    wildcard-style rule covering the entire scratchpad-venvs directory.
+$scratchpadVenvsDir = Join-Path $HOME ".anton\scratchpad-venvs"
 Write-Host ""
-Write-Host "  Anton's scratchpad needs internet access (for web scraping, APIs, etc.)."
-Write-Host "  This adds a Windows Firewall rule for the scratchpad Python executable."
+Write-Host "  Anton's scratchpads need internet access (for web scraping, APIs, etc.)."
+Write-Host "  This adds a Windows Firewall rule allowing Python executables under:"
+Write-Host "    $scratchpadVenvsDir"
 Write-Host ""
 
 if (Confirm-Step "Allow scratchpad internet access? (requires admin)") {
-    # Create the venv dir so the path exists for the rule
-    $scratchpadDir = Join-Path $HOME ".anton\scratchpad-venv"
-    if (-not (Test-Path $scratchpadDir)) {
-        New-Item -ItemType Directory -Path $scratchpadDir -Force | Out-Null
+    # Create the venvs dir so the path exists
+    if (-not (Test-Path $scratchpadVenvsDir)) {
+        New-Item -ItemType Directory -Path $scratchpadVenvsDir -Force | Out-Null
     }
 
+    # Windows Firewall doesn't support wildcards in program paths, so we
+    # allow the entire directory via a rule for each existing venv, plus
+    # a broad rule using the uv-managed tool python as a fallback.
+    # The most practical approach: allow any python.exe under scratchpad-venvs.
+    # We do this by adding a rule per existing venv and documenting how to
+    # add rules for new ones. For a fresh install, we add the directory rule.
     try {
+        # Remove old single-venv rule if it exists (from previous installs)
         Start-Process -FilePath "netsh" `
-            -ArgumentList "advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`"" `
-            -Verb RunAs -Wait -WindowStyle Hidden
-        Write-Host "  Firewall rule added" -ForegroundColor Green
+            -ArgumentList "advfirewall firewall delete rule name=`"Anton Scratchpad`"" `
+            -Verb RunAs -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+
+        # Add rules for any existing scratchpad venvs
+        $added = 0
+        if (Test-Path $scratchpadVenvsDir) {
+            Get-ChildItem -Path $scratchpadVenvsDir -Directory | ForEach-Object {
+                $pyExe = Join-Path $_.FullName "Scripts\python.exe"
+                if (Test-Path $pyExe) {
+                    Start-Process -FilePath "netsh" `
+                        -ArgumentList "advfirewall firewall add rule name=`"Anton Scratchpad - $($_.Name)`" dir=out action=allow program=`"$pyExe`"" `
+                        -Verb RunAs -Wait -WindowStyle Hidden
+                    $added++
+                }
+            }
+        }
+
+        # Also add a rule for the uv tool python (used to create venvs)
+        $uvToolPython = Join-Path $HOME ".local\share\uv\tools\anton\Scripts\python.exe"
+        if (Test-Path $uvToolPython) {
+            Start-Process -FilePath "netsh" `
+                -ArgumentList "advfirewall firewall add rule name=`"Anton Tool Python`" dir=out action=allow program=`"$uvToolPython`"" `
+                -Verb RunAs -Wait -WindowStyle Hidden
+        }
+
+        Write-Host "  Firewall rules added ($added scratchpad venvs)" -ForegroundColor Green
+        Write-Host "  Note: New scratchpads will create venvs automatically." -ForegroundColor Yellow
+        Write-Host "  If a new scratchpad's internet calls time out, re-run this script or add a rule manually:"
+        Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
     }
     catch {
-        Write-Host "  Could not add firewall rule (admin declined or unavailable)." -ForegroundColor Yellow
-        Write-Host "  You can add it manually later:"
-        Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`""
+        Write-Host "  Could not add firewall rules (admin declined or unavailable)." -ForegroundColor Yellow
+        Write-Host "  You can add them manually later for each scratchpad:"
+        Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
     }
 }
 else {
     Write-Host "  Skipped. If scratchpad internet calls time out, run this in an admin PowerShell:"
-    Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadPython`""
+    Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
 }
 
 # ── 7. Ensure ~/.local/bin is in user PATH ──────────────────────────
