@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -11,6 +12,7 @@ import anthropic
 
 from anton.clipboard import (
     cleanup_old_uploads,
+    clipboard_unavailable_reason,
     grab_clipboard,
     is_clipboard_supported,
     parse_dropped_paths as _parse_dropped_paths,
@@ -648,6 +650,53 @@ def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> li
     ]
 
 
+async def _ensure_clipboard(console: Console) -> bool:
+    """Check clipboard support; offer to install Pillow if missing.
+
+    Returns True if clipboard is ready to use, False otherwise.
+    """
+    reason = clipboard_unavailable_reason()
+    if reason is None:
+        return True
+    if reason == "unsupported_platform":
+        console.print("[anton.warning]Clipboard is not supported on this platform.[/]")
+        return False
+    # reason == "missing_pillow"
+    console.print("[anton.muted]Clipboard image support requires Pillow.[/]")
+    answer = console.input("[bold]Install Pillow now? (y/n):[/] ").strip().lower()
+    if answer not in ("y", "yes"):
+        console.print("[anton.muted]Skipped.[/]")
+        return False
+    console.print("[anton.muted]Installing Pillow...[/]")
+    import subprocess
+    proc = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: subprocess.run(
+            ["uv", "pip", "install", "--python", sys.executable, "Pillow"],
+            capture_output=True,
+            timeout=120,
+        ),
+    )
+    if proc.returncode == 0:
+        console.print("[anton.success]Pillow installed. Clipboard is now available.[/]")
+        return True
+    else:
+        # Fallback: try pip directly
+        proc = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [sys.executable, "-m", "pip", "install", "Pillow"],
+                capture_output=True,
+                timeout=120,
+            ),
+        )
+        if proc.returncode == 0:
+            console.print("[anton.success]Pillow installed. Clipboard is now available.[/]")
+            return True
+        console.print("[anton.error]Failed to install Pillow.[/]")
+        return False
+
+
 def _human_size(nbytes: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if nbytes < 1024:
@@ -796,8 +845,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     _print_slash_help(console)
                     continue
                 elif cmd == "/paste":
-                    if not is_clipboard_supported():
-                        console.print("[anton.warning]Clipboard not supported (install Pillow).[/]")
+                    if not await _ensure_clipboard(console):
                         continue
                     clip = grab_clipboard()
                     if clip.image:

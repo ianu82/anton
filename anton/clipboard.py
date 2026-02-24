@@ -66,6 +66,20 @@ def is_clipboard_supported() -> bool:
         return False
 
 
+def clipboard_unavailable_reason() -> str | None:
+    """Return a reason string if clipboard is unavailable, or None if OK.
+
+    Distinguishes between unsupported platform and missing Pillow.
+    """
+    if platform.system() not in ("Darwin", "Windows"):
+        return "unsupported_platform"
+    try:
+        from PIL import ImageGrab  # noqa: F401
+        return None
+    except ImportError:
+        return "missing_pillow"
+
+
 def grab_clipboard() -> ClipboardResult:
     """Inspect the system clipboard; try image first, then text/file paths."""
     result = ClipboardResult()
