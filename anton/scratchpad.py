@@ -214,17 +214,30 @@ if _minds_api_key:
     _minds_base_url = os.environ.get("MINDS_BASE_URL", "https://mdb.ai")
 
     class _MindResponse:
-        """Streaming response from Mind.ask(). Iterate for text deltas."""
+        """Streaming response from Mind.ask(). Iterate for text deltas.
+
+        Properties:
+            text      — full accumulated answer (auto-drains stream on first access)
+            completed — True after the response.completed SSE event
+            conversation_id / message_id — extracted from completed event
+        """
 
         def __init__(self, _client, _response, _mind):
             self._client = _client
             self._response = _response
             self._mind = _mind
-            self.text = ""
+            self._text = ""
             self.completed = False
             self.conversation_id = None
             self.message_id = None
             self._drained = False
+
+        @property
+        def text(self):
+            """Full accumulated text. Auto-drains the stream on first access."""
+            if not self._drained:
+                self._auto_drain()
+            return self._text
 
         def __iter__(self):
             try:
@@ -248,14 +261,23 @@ if _minds_api_key:
                 if etype == "response.output_text.delta":
                     delta = event.get("delta", "")
                     if delta:
-                        self.text += delta
+                        self._text += delta
                         yield delta
                 elif etype == "response.completed":
+                    # Extract IDs — check multiple locations since the API
+                    # structure may nest them differently
                     resp_obj = event.get("response", {})
-                    self.conversation_id = resp_obj.get("conversation_id")
-                    self.message_id = resp_obj.get("id")
+                    self.conversation_id = (
+                        resp_obj.get("conversation_id")
+                        or event.get("conversation_id")
+                    )
+                    self.message_id = (
+                        resp_obj.get("id")
+                        or event.get("id")
+                    )
                     self.completed = True
-                    self._mind._conversation_id = self.conversation_id
+                    if self.conversation_id:
+                        self._mind._conversation_id = self.conversation_id
             self._drained = True
 
         def _close(self):
@@ -303,8 +325,15 @@ if _minds_api_key:
             self._auto_drain()
             if not self.completed:
                 raise RuntimeError(
-                    "Stream did not complete — cannot fetch data. "
-                    "The mind's text answer is available in response.text"
+                    "Stream did not complete — cannot fetch data.\n"
+                    f"Mind text answer (response.text): {self._text[:500] if self._text else '(empty)'}"
+                )
+            if not self.conversation_id or not self.message_id:
+                raise RuntimeError(
+                    f"Cannot fetch data: conversation_id={self.conversation_id!r}, "
+                    f"message_id={self.message_id!r}. The API did not return "
+                    f"the required IDs in the response.completed event.\n"
+                    f"Mind text answer (response.text): {self._text[:500] if self._text else '(empty)'}"
                 )
 
             headers = {

@@ -314,11 +314,18 @@ class MindResponse:
         self._response = response
         self._mind = mind
 
-        self.text: str = ""
+        self._text: str = ""
         self.completed: bool = False
         self.conversation_id: str | None = None
         self.message_id: str | None = None
         self._drained: bool = False
+
+    @property
+    def text(self) -> str:
+        """Full accumulated text. Auto-drains the stream on first access."""
+        if not self._drained:
+            self._auto_drain()
+        return self._text
 
     def __iter__(self):
         try:
@@ -327,7 +334,6 @@ class MindResponse:
             self._close()
 
     def _iter_deltas(self):
-        buf = ""
         for line in self._response.iter_lines():
             if not line.startswith("data:"):
                 continue
@@ -342,15 +348,23 @@ class MindResponse:
             if etype == "response.output_text.delta":
                 delta = event.get("delta", "")
                 if delta:
-                    self.text += delta
+                    self._text += delta
                     yield delta
             elif etype == "response.completed":
+                # Extract IDs — check multiple locations since the API
+                # structure may nest them differently
                 resp_obj = event.get("response", {})
-                self.conversation_id = resp_obj.get("conversation_id")
-                self.message_id = resp_obj.get("id")
+                self.conversation_id = (
+                    resp_obj.get("conversation_id")
+                    or event.get("conversation_id")
+                )
+                self.message_id = (
+                    resp_obj.get("id")
+                    or event.get("id")
+                )
                 self.completed = True
-                # Update parent Mind for multi-turn
-                self._mind._conversation_id = self.conversation_id
+                if self.conversation_id:
+                    self._mind._conversation_id = self.conversation_id
         self._drained = True
 
     def _close(self) -> None:
@@ -386,8 +400,15 @@ class MindResponse:
         self._auto_drain()
         if not self.completed:
             raise RuntimeError(
-                "Stream did not complete — cannot fetch data. "
-                "The mind's text answer is available in response.text"
+                "Stream did not complete — cannot fetch data.\n"
+                f"Mind text answer (response.text): {self._text[:500] if self._text else '(empty)'}"
+            )
+        if not self.conversation_id or not self.message_id:
+            raise RuntimeError(
+                f"Cannot fetch data: conversation_id={self.conversation_id!r}, "
+                f"message_id={self.message_id!r}. The API did not return "
+                f"the required IDs in the response.completed event.\n"
+                f"Mind text answer (response.text): {self._text[:500] if self._text else '(empty)'}"
             )
 
         headers = {

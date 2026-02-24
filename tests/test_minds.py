@@ -741,3 +741,46 @@ class TestMindResponse:
         with patch("httpx.Client", return_value=mock_data_client):
             with pytest.raises(RuntimeError, match="export failed.*422"):
                 resp.get_data()
+
+    def test_text_auto_drains_on_access(self):
+        """Accessing .text without iterating should auto-drain the stream."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("test")
+
+        lines = [
+            'data: {"type": "response.output_text.delta", "delta": "auto "}',
+            'data: {"type": "response.output_text.delta", "delta": "drained"}',
+            'data: {"type": "response.completed", "response": {"conversation_id": "c1", "id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        # Do NOT iterate — just access .text directly
+        assert resp.text == "auto drained"
+        assert resp.completed is True
+
+    def test_get_data_raises_on_none_conversation_id(self):
+        """get_data() should raise clear error when conversation_id is None."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        # completed event with no conversation_id
+        lines = [
+            'data: {"type": "response.completed", "response": {"id": "msg_1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)
+
+        with pytest.raises(RuntimeError, match="conversation_id=None"):
+            resp.get_data()
+
+    def test_conversation_id_extracted_from_event_root(self):
+        """conversation_id should be found at event root if not in response obj."""
+        with patch.dict("os.environ", {"MINDS_API_KEY": "key-123"}):
+            mind = Mind("sales")
+
+        lines = [
+            'data: {"type": "response.completed", "conversation_id": "conv_root", "response": {"id": "m1"}}',
+        ]
+        resp = self._make_response(lines, mind=mind)
+        list(resp)
+        assert resp.conversation_id == "conv_root"
+        assert resp.message_id == "m1"
