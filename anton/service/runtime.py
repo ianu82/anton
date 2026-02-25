@@ -14,6 +14,7 @@ from anton.context.self_awareness import SelfAwarenessContext
 from anton.governance import BudgetConfig, BudgetTracker, PolicyConfig, PolicyEngine, ToolGateResult
 from anton.llm.client import LLMClient
 from anton.llm.provider import StreamComplete, StreamTextDelta
+from anton.service.memory import MemoryContextBuilder
 from anton.service.store import ServiceStore
 from anton.workspace import Workspace
 
@@ -24,6 +25,7 @@ class SessionRuntime:
     workspace_path: Path
     workspace: Workspace
     session: ChatSession
+    memory_context: MemoryContextBuilder
     lock: asyncio.Lock
 
 
@@ -442,6 +444,19 @@ class RuntimeManager:
         metadata = session_row.get("metadata", {}) if session_row else {}
         raw_auth = metadata.get("auth_context") if isinstance(metadata, dict) else None
         auth_context = ConnectorHub.auth_context_from_dict(raw_auth if isinstance(raw_auth, dict) else None)
+        memory_text, memory_provenance = runtime.memory_context.build(message)
+        message_for_turn = message
+        if memory_text:
+            message_for_turn = f"{message}\n\n{memory_text}"
+        self._store.append_event(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="memory_retrieval",
+            payload={
+                "retrieved_count": len(memory_provenance),
+                "provenance": memory_provenance,
+            },
+        )
 
         policy = PolicyEngine(
             PolicyConfig(
@@ -506,7 +521,7 @@ class RuntimeManager:
             )
 
             try:
-                async for event in runtime.session.turn_stream(message):
+                async for event in runtime.session.turn_stream(message_for_turn):
                     if self._store.is_run_cancel_requested(run_id):
                         raise asyncio.CancelledError("Run cancelled by user request")
 
@@ -607,11 +622,19 @@ class RuntimeManager:
             connector_hub=connector_hub,
         )
 
+        memory_context = MemoryContextBuilder(
+            memory_dir=Path(settings.memory_dir),
+            enabled=bool(settings.memory_enabled),
+            max_items=max(1, int(settings.memory_recall_max_items)),
+            max_chars=max(1000, int(settings.memory_recall_max_chars)),
+        )
+
         return SessionRuntime(
             session_id=session_id,
             workspace_path=workspace_root,
             workspace=workspace,
             session=session,
+            memory_context=memory_context,
             lock=asyncio.Lock(),
         )
 
