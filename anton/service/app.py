@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sqlite3
@@ -80,19 +81,10 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         audit_log_path=service_root / "audit.log.jsonl",
     )
     runtime = RuntimeManager(resolved_settings, store)
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        await runtime.start()
-        try:
-            yield
-        finally:
-            await runtime.close()
-
-    app = FastAPI(title="Anton MVP Service", version="0.1.0", lifespan=lifespan)
-    app.state.settings = resolved_settings
-    app.state.store = store
-    app.state.runtime = runtime
+    scheduler_enabled = bool(resolved_settings.service_scheduler_enabled)
+    scheduler_poll_seconds = max(0.1, float(resolved_settings.service_scheduler_poll_seconds))
+    scheduler_batch_size = max(1, int(resolved_settings.service_scheduler_batch_size))
+    scheduler_task: asyncio.Task | None = None
 
     async def _run_skill_once(
         *,
@@ -126,6 +118,82 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return template, rendered_prompt, result
+
+    async def _scheduler_loop() -> None:
+        while True:
+            now = time.time()
+            due = [
+                schedule
+                for schedule in store.list_schedules(status="active", limit=scheduler_batch_size)
+                if float(schedule["next_run_at"]) <= now
+            ]
+            due.sort(key=lambda item: float(item["next_run_at"]))
+
+            for schedule in due:
+                schedule_id = schedule["id"]
+                schedule_run_id = f"schedule-{schedule_id}"
+                try:
+                    template, _rendered_prompt, result = await _run_skill_once(
+                        skill_id=schedule["skill_id"],
+                        version=schedule["skill_version"],
+                        session_id=schedule["session_id"],
+                        params=schedule["params"],
+                        idempotency_key=f"schedule:{schedule_id}:{int(now)}",
+                        wait_for_completion=False,
+                        wait_timeout_seconds=float(resolved_settings.service_default_wait_timeout_seconds),
+                    )
+                    store.record_schedule_trigger(schedule_id=schedule_id, run_id=result["run_id"])
+                    store.append_event(
+                        session_id=schedule["session_id"],
+                        run_id=result["run_id"],
+                        event_type="schedule_triggered",
+                        payload={
+                            "schedule_id": schedule_id,
+                            "skill_id": template["skill_id"],
+                            "skill_version": template["version"],
+                            "mode": "automatic",
+                        },
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except HTTPException as exc:
+                    store.set_schedule_status(schedule_id=schedule_id, status="paused")
+                    store.append_event(
+                        session_id=schedule["session_id"],
+                        run_id=schedule_run_id,
+                        event_type="schedule_trigger_failed",
+                        payload={"schedule_id": schedule_id, "detail": str(exc.detail)},
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    store.set_schedule_status(schedule_id=schedule_id, status="paused")
+                    store.append_event(
+                        session_id=schedule["session_id"],
+                        run_id=schedule_run_id,
+                        event_type="schedule_trigger_failed",
+                        payload={"schedule_id": schedule_id, "detail": str(exc)},
+                    )
+
+            await asyncio.sleep(scheduler_poll_seconds)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        nonlocal scheduler_task
+        await runtime.start()
+        if scheduler_enabled:
+            scheduler_task = asyncio.create_task(_scheduler_loop(), name="anton-scheduler")
+        try:
+            yield
+        finally:
+            if scheduler_task is not None:
+                scheduler_task.cancel()
+                await asyncio.gather(scheduler_task, return_exceptions=True)
+                scheduler_task = None
+            await runtime.close()
+
+    app = FastAPI(title="Anton MVP Service", version="0.1.0", lifespan=lifespan)
+    app.state.settings = resolved_settings
+    app.state.store = store
+    app.state.runtime = runtime
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -350,6 +418,17 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
             wait_timeout_seconds=req.wait_timeout_seconds,
         )
         updated = store.record_schedule_trigger(schedule_id=schedule_id, run_id=result["run_id"])
+        store.append_event(
+            session_id=schedule["session_id"],
+            run_id=result["run_id"],
+            event_type="schedule_triggered",
+            payload={
+                "schedule_id": schedule_id,
+                "skill_id": template["skill_id"],
+                "skill_version": template["version"],
+                "mode": "manual",
+            },
+        )
         return {
             "schedule_id": schedule_id,
             "skill_id": template["skill_id"],

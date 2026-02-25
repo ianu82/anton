@@ -147,3 +147,56 @@ def test_schedule_create_requires_valid_skill_params(tmp_path: Path, monkeypatch
         )
         assert created.status_code == 400
         assert "Missing required skill params" in created.json()["detail"]
+
+
+def test_scheduler_worker_auto_triggers_due_schedule(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: _TextOnlyLLM())
+    settings = _build_settings(tmp_path)
+    settings.service_scheduler_enabled = True
+    settings.service_scheduler_poll_seconds = 0.05
+    settings.service_scheduler_batch_size = 10
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "sched-auto")}).json()["session_id"]
+        skill = client.post(
+            "/skills",
+            json={
+                "name": f"auto_schedule_skill_{uuid.uuid4().hex[:8]}",
+                "description": "Auto schedule prompt",
+                "prompt_template": "Auto summarize {metric}.",
+            },
+        ).json()
+        schedule = client.post(
+            "/scheduled-runs",
+            json={
+                "session_id": session_id,
+                "skill_id": skill["id"],
+                "params": {"metric": "churn"},
+                "interval_seconds": 60,
+                "start_in_seconds": 0,
+                "active": True,
+            },
+        ).json()
+
+        deadline = time.time() + 5
+        last_run_id = None
+        while time.time() < deadline:
+            current = client.get(f"/scheduled-runs/{schedule['id']}").json()
+            last_run_id = current["last_run_id"]
+            if last_run_id:
+                break
+            time.sleep(0.1)
+
+        assert last_run_id is not None
+
+        run = client.get(f"/runs/{last_run_id}").json()
+        assert run["status"] in {"queued", "running", "completed"}
+
+        events = client.get(f"/sessions/{session_id}/events").json()["events"]
+        auto_events = [
+            event
+            for event in events
+            if event["event_type"] == "schedule_triggered" and event["payload"].get("mode") == "automatic"
+        ]
+        assert len(auto_events) >= 1

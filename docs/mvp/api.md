@@ -204,6 +204,9 @@ Pause a schedule.
 
 Resume a paused schedule.
 
+When `ANTON_SERVICE_SCHEDULER_ENABLED=true`, active schedules whose `next_run_at` is due are automatically triggered by the service worker.
+Automatic and manual triggers emit `schedule_triggered` events (`payload.mode` is `automatic` or `manual`).
+
 ## Metrics
 
 ### `GET /metrics`
