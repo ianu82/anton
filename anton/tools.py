@@ -218,21 +218,22 @@ def handle_update_context(session: ChatSession, tc_input: dict) -> str:
 
 
 def _password_input(prompt_label: str) -> str:
-    """Read a password with masked input (asterisks). Separated for testability."""
-    from prompt_toolkit import prompt as pt_prompt
-    return pt_prompt(prompt_label, is_password=True)
+    """Read a password with hidden input. Separated for testability."""
+    import getpass
+    return getpass.getpass(prompt_label)
 
 
 def prompt_secret(console, var_name: str, prompt_text: str) -> str:
-    """Prompt the user for a secret with masked input and context.
+    """Prompt the user for a secret with hidden input and context.
 
-    Shows a contextual banner and masks keystrokes with asterisks.
+    Shows a contextual banner explaining what's needed and why.
+    Input is hidden (standard password behavior).
     Returns the stripped value (may be empty).
     """
     console.print()
-    console.print(f"[bold]Secret requested:[/] [anton.cyan]{var_name}[/]")
-    console.print(f"[anton.muted]  {prompt_text}[/]")
-    console.print(f"[anton.muted]  Value will be stored in .anton/.env and never shown to the AI.[/]")
+    console.print(f"  [bold]Secret requested:[/] [anton.cyan]{var_name}[/]")
+    console.print(f"  {prompt_text}")
+    console.print(f"  [anton.muted]Stored in .anton/.env · never shown to the AI · input is hidden[/]")
     value = _password_input(f"  {var_name}> ")
     return value.strip()
 
