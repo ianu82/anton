@@ -438,11 +438,16 @@ class RuntimeManager:
         run: dict[str, Any],
     ) -> dict[str, Any]:
         runtime = await self.get_or_restore_session(session_id)
+        session_row = self._store.get_session(session_id)
+        metadata = session_row.get("metadata", {}) if session_row else {}
+        raw_auth = metadata.get("auth_context") if isinstance(metadata, dict) else None
+        auth_context = ConnectorHub.auth_context_from_dict(raw_auth if isinstance(raw_auth, dict) else None)
 
         policy = PolicyEngine(
             PolicyConfig(
                 max_estimated_seconds_without_approval=self._settings.max_estimated_seconds_without_approval,
                 connector_max_query_limit=self._settings.connector_max_query_limit,
+                connector_require_where_or_limit=self._settings.connector_require_where_or_limit,
             )
         )
         budget = BudgetTracker(
@@ -493,6 +498,7 @@ class RuntimeManager:
             if run_task is not None:
                 self._active_run_tasks[run_id] = run_task
 
+            runtime.session.configure_connector_auth_context(auth_context)
             runtime.session.configure_run_hooks(
                 tool_gate=governance.tool_gate,
                 usage_hook=governance.usage_hook,
@@ -528,6 +534,7 @@ class RuntimeManager:
                     usage_hook=None,
                     audit_hook=None,
                 )
+                runtime.session.configure_connector_auth_context(None)
                 self._active_run_tasks.pop(run_id, None)
 
         after_artifacts = self._snapshot_artifacts(output_dir)

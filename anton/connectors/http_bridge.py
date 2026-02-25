@@ -6,7 +6,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from anton.connectors.base import ConnectorClient, ConnectorError, ConnectorInfo, ConnectorSchema, QueryResult
+from anton.connectors.base import (
+    ConnectorAuthContext,
+    ConnectorClient,
+    ConnectorError,
+    ConnectorInfo,
+    ConnectorSchema,
+    QueryResult,
+)
 
 
 class HTTPConnectorClient(ConnectorClient):
@@ -25,8 +32,8 @@ class HTTPConnectorClient(ConnectorClient):
         self._timeout_seconds = timeout_seconds
         self._path_prefix = path_prefix.rstrip("/")
 
-    async def list_connectors(self) -> list[ConnectorInfo]:
-        payload = await self._request("GET", f"{self._path_prefix}/connectors")
+    async def list_connectors(self, *, auth_context: ConnectorAuthContext | None = None) -> list[ConnectorInfo]:
+        payload = await self._request("GET", f"{self._path_prefix}/connectors", auth_context=auth_context)
         items = payload.get("connectors", payload)
         if not isinstance(items, list):
             raise ConnectorError("Connector service returned invalid connector list payload.")
@@ -43,8 +50,17 @@ class HTTPConnectorClient(ConnectorClient):
             )
         return out
 
-    async def describe_schema(self, connector_id: str) -> ConnectorSchema:
-        payload = await self._request("GET", f"{self._path_prefix}/connectors/{connector_id}/schema")
+    async def describe_schema(
+        self,
+        connector_id: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> ConnectorSchema:
+        payload = await self._request(
+            "GET",
+            f"{self._path_prefix}/connectors/{connector_id}/schema",
+            auth_context=auth_context,
+        )
         tables = payload.get("tables", {})
         if not isinstance(tables, dict):
             raise ConnectorError("Connector service returned invalid schema payload.")
@@ -60,11 +76,18 @@ class HTTPConnectorClient(ConnectorClient):
         query: str,
         *,
         limit: int = 1000,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         payload = await self._request(
             "POST",
             f"{self._path_prefix}/connectors/{connector_id}/query",
-            {"query": query, "limit": max(1, limit), "mode": "read"},
+            {
+                "query": query,
+                "limit": max(1, limit),
+                "mode": "read",
+                "auth_context": self._auth_payload(auth_context),
+            },
+            auth_context=auth_context,
         )
         return self._to_query_result(connector_id, query, payload)
 
@@ -74,20 +97,37 @@ class HTTPConnectorClient(ConnectorClient):
         table: str,
         *,
         limit: int = 100,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         payload = await self._request(
             "POST",
             f"{self._path_prefix}/connectors/{connector_id}/sample",
-            {"table": table, "limit": max(1, limit)},
+            {
+                "table": table,
+                "limit": max(1, limit),
+                "auth_context": self._auth_payload(auth_context),
+            },
+            auth_context=auth_context,
         )
         query = str(payload.get("query", f"SELECT * FROM {table} LIMIT {max(1, limit)}"))
         return self._to_query_result(connector_id, query, payload)
 
-    async def write(self, connector_id: str, query: str) -> QueryResult:
+    async def write(
+        self,
+        connector_id: str,
+        query: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> QueryResult:
         payload = await self._request(
             "POST",
             f"{self._path_prefix}/connectors/{connector_id}/query",
-            {"query": query, "mode": "write"},
+            {
+                "query": query,
+                "mode": "write",
+                "auth_context": self._auth_payload(auth_context),
+            },
+            auth_context=auth_context,
         )
         result = self._to_query_result(connector_id, query, payload)
         result.affected_rows = int(payload.get("affected_rows", 0))
@@ -119,15 +159,33 @@ class HTTPConnectorClient(ConnectorClient):
             truncated=truncated,
         )
 
-    async def _request(self, method: str, path: str, body: dict | None = None) -> dict:
-        return await asyncio.to_thread(self._request_sync, method, path, body)
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> dict:
+        return await asyncio.to_thread(self._request_sync, method, path, body, auth_context)
 
-    def _request_sync(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request_sync(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> dict:
         url = urllib.parse.urljoin(f"{self._base_url}/", path.lstrip("/"))
         headers = {"Accept": "application/json"}
         data: bytes | None = None
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        if auth_context is not None:
+            if auth_context.user_id:
+                headers["X-Anton-User-Id"] = auth_context.user_id
+            if auth_context.org_id:
+                headers["X-Anton-Org-Id"] = auth_context.org_id
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
@@ -151,3 +209,14 @@ class HTTPConnectorClient(ConnectorClient):
         if not isinstance(parsed, dict):
             raise ConnectorError("Connector service returned invalid JSON payload type.")
         return parsed
+
+    @staticmethod
+    def _auth_payload(auth_context: ConnectorAuthContext | None) -> dict | None:
+        if auth_context is None:
+            return None
+        return {
+            "user_id": auth_context.user_id,
+            "org_id": auth_context.org_id,
+            "roles": auth_context.roles or [],
+            "attributes": auth_context.attributes or {},
+        }

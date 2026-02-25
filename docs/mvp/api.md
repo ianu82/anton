@@ -12,7 +12,15 @@ Request:
 {
   "session_id": "optional-id",
   "workspace_path": "/abs/path/to/workspace",
-  "metadata": {"team": "analytics"}
+  "metadata": {
+    "team": "analytics",
+    "auth_context": {
+      "user_id": "u-123",
+      "org_id": "org-9",
+      "roles": ["analyst"],
+      "attributes": {"region": "us"}
+    }
+  }
 }
 ```
 

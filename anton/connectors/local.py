@@ -4,7 +4,14 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
-from anton.connectors.base import ConnectorClient, ConnectorError, ConnectorInfo, ConnectorSchema, QueryResult
+from anton.connectors.base import (
+    ConnectorAuthContext,
+    ConnectorClient,
+    ConnectorError,
+    ConnectorInfo,
+    ConnectorSchema,
+    QueryResult,
+)
 
 
 class LocalSQLiteConnectorClient(ConnectorClient):
@@ -22,13 +29,18 @@ class LocalSQLiteConnectorClient(ConnectorClient):
             raise ConnectorError(f"SQLite database for connector '{connector_id}' not found: {db_path}")
         return str(db_path)
 
-    async def list_connectors(self) -> list[ConnectorInfo]:
+    async def list_connectors(self, *, auth_context: ConnectorAuthContext | None = None) -> list[ConnectorInfo]:
         return [
             ConnectorInfo(connector_id=connector_id, connector_type="sqlite", description=path)
             for connector_id, path in sorted(self._connector_map.items())
         ]
 
-    async def describe_schema(self, connector_id: str) -> ConnectorSchema:
+    async def describe_schema(
+        self,
+        connector_id: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> ConnectorSchema:
         db_path = self._db_path(connector_id)
         return await asyncio.to_thread(self._describe_schema_sync, connector_id, db_path)
 
@@ -38,6 +50,7 @@ class LocalSQLiteConnectorClient(ConnectorClient):
         query: str,
         *,
         limit: int = 1000,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         db_path = self._db_path(connector_id)
         return await asyncio.to_thread(self._run_query_sync, connector_id, db_path, query, limit)
@@ -48,14 +61,17 @@ class LocalSQLiteConnectorClient(ConnectorClient):
         table: str,
         *,
         limit: int = 100,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         query = f"SELECT * FROM {table} LIMIT {max(1, limit)}"
-        return await self.run_query(connector_id, query, limit=limit)
+        return await self.run_query(connector_id, query, limit=limit, auth_context=auth_context)
 
     async def write(
         self,
         connector_id: str,
         query: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         db_path = self._db_path(connector_id)
         return await asyncio.to_thread(self._write_sync, connector_id, db_path, query)

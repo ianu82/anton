@@ -54,3 +54,31 @@ def test_query_limit_policy_enforced():
     )
     assert decision.allow is False
     assert "exceeds policy" in decision.reason
+
+
+def test_unbounded_select_requires_approval():
+    engine = PolicyEngine(PolicyConfig(connector_require_where_or_limit=True))
+    decision = engine.evaluate(
+        "connector",
+        {
+            "action": "query",
+            "query": "SELECT * FROM users",
+            "limit": 1000,
+        },
+    )
+    assert decision.allow is False
+    assert decision.requires_approval is True
+
+
+def test_blocked_sql_fragment_rejected():
+    engine = PolicyEngine(PolicyConfig())
+    decision = engine.evaluate(
+        "connector",
+        {
+            "action": "query",
+            "query": "SELECT * FROM users; DROP TABLE users",
+            "limit": 100,
+        },
+    )
+    assert decision.allow is False
+    assert "blocked SQL fragment" in decision.reason
