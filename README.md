@@ -55,6 +55,35 @@ including dates and credible sources. Use only publicly accessible
 information and scrape the web as needed, assuming no API keys are available.
 ```
 
+## MVP service API
+
+Anton now includes a sessioned service mode for conversational analytics backends.
+
+Start the API:
+
+```bash
+anton serve --host 127.0.0.1 --port 8000
+```
+
+Key endpoints:
+
+- `POST /sessions`
+- `POST /sessions/{session_id}/turn`
+- `GET /sessions/{session_id}/events`
+- `GET /runs/{run_id}/trace`
+- `GET /runs/{run_id}/artifacts`
+- `GET /approvals`
+- `POST /approvals/{approval_id}/decision`
+- `GET /metrics`
+
+MVP docs and runbook: [`docs/mvp/`](docs/mvp/README.md)
+
+Benchmark harness:
+
+```bash
+anton eval-mvp --tasks docs/mvp/eval/tasks.sample.json
+```
+
 ## How it works
 
 Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs, operating as follows.

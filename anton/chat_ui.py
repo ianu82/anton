@@ -27,6 +27,7 @@ class _ToolActivity:
 
 _TOOL_LABELS: dict[str, str] = {
     "scratchpad": "Scratchpad",
+    "connector": "Connector",
     "update_context": "Context",
     "request_secret": "Secret",
 }

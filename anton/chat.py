@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 import time
@@ -31,6 +32,7 @@ from anton.llm.provider import (
 )
 from anton.scratchpad import ScratchpadManager
 from anton.tools import (
+    CONNECTOR_TOOL,
     REQUEST_SECRET_TOOL,
     SCRATCHPAD_TOOL,
     UPDATE_CONTEXT_TOOL,
@@ -43,8 +45,10 @@ from anton.tools import (
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from anton.connectors.hub import ConnectorHub
     from anton.config.settings import AntonSettings
     from anton.context.self_awareness import SelfAwarenessContext
+    from anton.governance.hooks import AuditHook, ToolGate, UsageHook
     from anton.llm.client import LLMClient
     from anton.workspace import Workspace
 
@@ -73,12 +77,20 @@ class ChatSession:
         console: Console | None = None,
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
+        connector_hub: ConnectorHub | None = None,
+        tool_gate: ToolGate | None = None,
+        usage_hook: UsageHook | None = None,
+        audit_hook: AuditHook | None = None,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
         self._runtime_context = runtime_context
         self._workspace = workspace
         self._console = console
+        self._connector_hub = connector_hub
+        self._tool_gate = tool_gate
+        self._usage_hook = usage_hook
+        self._audit_hook = audit_hook
         self._history: list[dict] = []
         self._scratchpads = ScratchpadManager(
             coding_provider=coding_provider,
@@ -86,6 +98,18 @@ class ChatSession:
             coding_api_key=coding_api_key,
             secret_handler=self._make_secret_handler(),
         )
+
+    def configure_run_hooks(
+        self,
+        *,
+        tool_gate: ToolGate | None = None,
+        usage_hook: UsageHook | None = None,
+        audit_hook: AuditHook | None = None,
+    ) -> None:
+        """Set optional governance hooks used during tool/LLM execution."""
+        self._tool_gate = tool_gate
+        self._usage_hook = usage_hook
+        self._audit_hook = audit_hook
 
     def _make_secret_handler(self):
         """Create a closure that prompts the user for secrets via the console."""
@@ -101,6 +125,25 @@ class ChatSession:
             self._workspace.set_secret(var_name, value)
             return value
         return handler
+
+    def _emit_audit(self, event_name: str, payload: dict) -> None:
+        if self._audit_hook is not None:
+            self._audit_hook(event_name, payload)
+
+    def _emit_usage(self, usage) -> None:
+        if self._usage_hook is not None:
+            self._usage_hook(usage)
+
+    async def _check_tool_gate(self, tool_name: str, tc_input: dict):
+        from anton.governance.hooks import ToolGateResult
+
+        if self._tool_gate is None:
+            return ToolGateResult(allow=True)
+
+        decision = self._tool_gate(tool_name, tc_input)
+        if inspect.isawaitable(decision):
+            decision = await decision
+        return decision
 
     @property
     def history(self) -> list[dict]:
@@ -154,6 +197,8 @@ class ChatSession:
             tools.append(UPDATE_CONTEXT_TOOL)
         if self._workspace is not None:
             tools.append(REQUEST_SECRET_TOOL)
+        if self._connector_hub is not None:
+            tools.append(CONNECTOR_TOOL)
         return tools
 
     async def close(self) -> None:
@@ -170,6 +215,17 @@ class ChatSession:
             system=system,
             messages=self._history,
             tools=tools,
+        )
+        self._emit_usage(response.usage)
+        self._emit_audit(
+            "llm_response",
+            {
+                "mode": "non_stream",
+                "stop_reason": response.stop_reason or "",
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "tool_calls": len(response.tool_calls),
+            },
         )
 
         # Handle tool calls
@@ -211,13 +267,39 @@ class ChatSession:
             # Process each tool call via registry
             tool_results: list[dict] = []
             for tc in response.tool_calls:
+                self._emit_audit(
+                    "tool_call",
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    },
+                )
                 try:
-                    result_text = await dispatch_tool(self, tc.name, tc.input)
+                    gate = await self._check_tool_gate(tc.name, tc.input)
+                    if not gate.allow:
+                        if gate.pending_approval_id:
+                            result_text = (
+                                "Pending approval "
+                                f"{gate.pending_approval_id}: {gate.message}"
+                            )
+                        else:
+                            result_text = f"Rejected: {gate.message}"
+                    else:
+                        result_text = await dispatch_tool(self, tc.name, tc.input)
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
                 result_text = _apply_error_tracking(
                     result_text, tc.name, error_streak, resilience_nudged,
+                )
+                self._emit_audit(
+                    "tool_result",
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "content_preview": result_text[:500],
+                    },
                 )
 
                 tool_results.append({
@@ -234,10 +316,22 @@ class ChatSession:
                 messages=self._history,
                 tools=tools,
             )
+            self._emit_usage(response.usage)
+            self._emit_audit(
+                "llm_response",
+                {
+                    "mode": "non_stream",
+                    "stop_reason": response.stop_reason or "",
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "tool_calls": len(response.tool_calls),
+                },
+            )
 
         # Text-only response
         reply = response.content or ""
         self._history.append({"role": "assistant", "content": reply})
+        self._emit_audit("assistant_reply", {"mode": "non_stream", "content": reply[:2000]})
         return reply
 
     async def turn_stream(self, user_input: str | list[dict]) -> AsyncIterator[StreamEvent]:
@@ -262,6 +356,17 @@ class ChatSession:
             yield event
             if isinstance(event, StreamComplete):
                 response = event
+                self._emit_usage(event.response.usage)
+                self._emit_audit(
+                    "llm_response",
+                    {
+                        "mode": "stream",
+                        "stop_reason": event.response.stop_reason or "",
+                        "input_tokens": event.response.usage.input_tokens,
+                        "output_tokens": event.response.usage.output_tokens,
+                        "tool_calls": len(event.response.tool_calls),
+                    },
+                )
 
         if response is None:
             return
@@ -308,8 +413,25 @@ class ChatSession:
             # Process each tool call
             tool_results: list[dict] = []
             for tc in llm_response.tool_calls:
+                self._emit_audit(
+                    "tool_call",
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    },
+                )
                 try:
-                    if tc.name == "scratchpad" and tc.input.get("action") == "exec":
+                    gate = await self._check_tool_gate(tc.name, tc.input)
+                    if not gate.allow:
+                        if gate.pending_approval_id:
+                            result_text = (
+                                "Pending approval "
+                                f"{gate.pending_approval_id}: {gate.message}"
+                            )
+                        else:
+                            result_text = f"Rejected: {gate.message}"
+                    elif tc.name == "scratchpad" and tc.input.get("action") == "exec":
                         # Inline streaming exec — yields progress events
                         prep = await prepare_scratchpad_exec(self, tc.input)
                         if isinstance(prep, str):
@@ -346,6 +468,14 @@ class ChatSession:
                 result_text = _apply_error_tracking(
                     result_text, tc.name, error_streak, resilience_nudged,
                 )
+                self._emit_audit(
+                    "tool_result",
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "content_preview": result_text[:500],
+                    },
+                )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -365,6 +495,17 @@ class ChatSession:
                 yield event
                 if isinstance(event, StreamComplete):
                     response = event
+                    self._emit_usage(event.response.usage)
+                    self._emit_audit(
+                        "llm_response",
+                        {
+                            "mode": "stream",
+                            "stop_reason": event.response.stop_reason or "",
+                            "input_tokens": event.response.usage.input_tokens,
+                            "output_tokens": event.response.usage.output_tokens,
+                            "tool_calls": len(event.response.tool_calls),
+                        },
+                    )
 
             if response is None:
                 return
@@ -373,6 +514,7 @@ class ChatSession:
         # Text-only final response — append to history
         reply = llm_response.content or ""
         self._history.append({"role": "assistant", "content": reply})
+        self._emit_audit("assistant_reply", {"mode": "stream", "content": reply[:2000]})
 
 
 def _apply_error_tracking(
@@ -416,14 +558,20 @@ def _rebuild_session(
     console: Console,
 ) -> ChatSession:
     """Rebuild LLMClient + ChatSession after settings change."""
+    from anton.connectors import ConnectorHub
     from anton.llm.client import LLMClient
 
     state["llm_client"] = LLMClient.from_settings(settings)
+    connector_hub = ConnectorHub.from_settings(
+        settings,
+        workspace=Path(settings.workspace_path),
+    )
     runtime_context = (
         f"- Provider: {settings.planning_provider}\n"
         f"- Planning model: {settings.planning_model}\n"
         f"- Coding model: {settings.coding_model}\n"
         f"- Workspace: {settings.workspace_path}\n"
+        f"- Connector mode: {settings.connector_mode}\n"
     )
     api_key = (
         settings.anthropic_api_key if settings.coding_provider == "anthropic"
@@ -437,6 +585,7 @@ def _rebuild_session(
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=api_key,
+        connector_hub=connector_hub,
     )
 
 
@@ -722,6 +871,7 @@ def run_chat(console: Console, settings: AntonSettings) -> None:
 
 
 async def _chat_loop(console: Console, settings: AntonSettings) -> None:
+    from anton.connectors import ConnectorHub
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.workspace import Workspace
@@ -746,13 +896,18 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         f"- Planning model: {settings.planning_model}\n"
         f"- Coding model: {settings.coding_model}\n"
         f"- Workspace: {settings.workspace_path}\n"
-        f"- Memory: {'enabled' if settings.memory_enabled else 'disabled'}"
+        f"- Memory: {'enabled' if settings.memory_enabled else 'disabled'}\n"
+        f"- Connector mode: {settings.connector_mode}"
     )
 
     coding_api_key = (
         settings.anthropic_api_key if settings.coding_provider == "anthropic"
         else settings.openai_api_key
     ) or ""
+    connector_hub = ConnectorHub.from_settings(
+        settings,
+        workspace=Path(settings.workspace_path),
+    )
     session = ChatSession(
         state["llm_client"],
         self_awareness=self_awareness,
@@ -761,6 +916,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=coding_api_key,
+        connector_hub=connector_hub,
     )
 
     console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")

@@ -42,6 +42,23 @@ class AntonSettings(BaseSettings):
 
     disable_autoupdates: bool = False
 
+    # Connector integration
+    connector_mode: str = "none"  # none | http | local
+    connector_api_base_url: str | None = None
+    connector_api_token: str | None = None
+    connector_api_path_prefix: str = "/v1"
+    connector_timeout_seconds: int = 30
+    connector_local_sqlite_map: str = "{}"
+
+    # Governance + budgets
+    max_tokens_per_run: int = 100_000
+    max_tool_calls_per_run: int = 60
+    max_estimated_seconds_without_approval: int = 90
+    connector_max_query_limit: int = 10_000
+
+    # Service runtime mode
+    service_worker_mode: str = "local"
+
     _workspace: Path = PrivateAttr(default=None)
 
     @property

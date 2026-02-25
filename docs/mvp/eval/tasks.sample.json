@@ -1,0 +1,11 @@
+[
+  {
+    "name": "simple_greeting",
+    "prompt": "say hello",
+    "expect_contains": "hello"
+  },
+  {
+    "name": "cohort_request",
+    "prompt": "show churn by cohort and summarize key drivers"
+  }
+]

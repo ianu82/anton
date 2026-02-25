@@ -1,0 +1,610 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+
+class ServiceStore:
+    """SQLite-backed store for session/run/audit state."""
+
+    def __init__(self, db_path: Path, *, audit_log_path: Path | None = None) -> None:
+        self._db_path = db_path
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._audit_log_path = audit_log_path
+        self._lock = threading.Lock()
+        self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS sessions (
+                      id TEXT PRIMARY KEY,
+                      created_at REAL NOT NULL,
+                      workspace_path TEXT NOT NULL,
+                      metadata TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS runs (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      created_at REAL NOT NULL,
+                      started_at REAL NOT NULL,
+                      completed_at REAL,
+                      status TEXT NOT NULL,
+                      prompt TEXT NOT NULL,
+                      response TEXT,
+                      error TEXT,
+                      input_tokens INTEGER NOT NULL DEFAULT 0,
+                      output_tokens INTEGER NOT NULL DEFAULT 0,
+                      pending_approval_ids TEXT NOT NULL DEFAULT '[]',
+                      FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS run_events (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      session_id TEXT NOT NULL,
+                      run_id TEXT NOT NULL,
+                      ts REAL NOT NULL,
+                      event_type TEXT NOT NULL,
+                      payload TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_run_events_session_id_id ON run_events(session_id, id);
+                    CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id);
+
+                    CREATE TABLE IF NOT EXISTS approvals (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      run_id TEXT NOT NULL,
+                      tool_name TEXT NOT NULL,
+                      tool_input TEXT NOT NULL,
+                      fingerprint TEXT NOT NULL,
+                      reason TEXT NOT NULL,
+                      status TEXT NOT NULL,
+                      created_at REAL NOT NULL,
+                      decided_at REAL,
+                      decision_note TEXT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_approvals_session_fingerprint ON approvals(session_id, fingerprint, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS artifacts (
+                      id TEXT PRIMARY KEY,
+                      run_id TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      path TEXT NOT NULL,
+                      created_at REAL NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts(run_id);
+
+                    CREATE TABLE IF NOT EXISTS usage_ledger (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      session_id TEXT NOT NULL,
+                      run_id TEXT NOT NULL,
+                      ts REAL NOT NULL,
+                      metric TEXT NOT NULL,
+                      amount REAL NOT NULL,
+                      metadata TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_usage_run_id ON usage_ledger(run_id);
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def create_session(
+        self,
+        *,
+        session_id: str,
+        workspace_path: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        payload = json.dumps(metadata or {}, sort_keys=True)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO sessions(id, created_at, workspace_path, metadata) VALUES(?, ?, ?, ?)",
+                    (session_id, now, workspace_path, payload),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        return {
+            "id": session_id,
+            "created_at": now,
+            "workspace_path": workspace_path,
+            "metadata": metadata or {},
+        }
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT id, created_at, workspace_path, metadata FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "workspace_path": row["workspace_path"],
+            "metadata": json.loads(row["metadata"]),
+        }
+
+    def create_run(self, *, run_id: str, session_id: str, prompt: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO runs(
+                      id, session_id, created_at, started_at, status, prompt,
+                      pending_approval_ids
+                    ) VALUES(?, ?, ?, ?, ?, ?, '[]')
+                    """,
+                    (run_id, session_id, now, now, "running", prompt),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        return {
+            "id": run_id,
+            "session_id": session_id,
+            "created_at": now,
+            "started_at": now,
+            "status": "running",
+            "prompt": prompt,
+        }
+
+    def complete_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        response: str,
+        error: str | None,
+        input_tokens: int,
+        output_tokens: int,
+        pending_approval_ids: list[str],
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET completed_at = ?, status = ?, response = ?, error = ?,
+                        input_tokens = ?, output_tokens = ?, pending_approval_ids = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        status,
+                        response,
+                        error,
+                        input_tokens,
+                        output_tokens,
+                        json.dumps(pending_approval_ids),
+                        run_id,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "created_at": row["created_at"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "status": row["status"],
+            "prompt": row["prompt"],
+            "response": row["response"],
+            "error": row["error"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "pending_approval_ids": json.loads(row["pending_approval_ids"]),
+        }
+
+    def append_event(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> int:
+        now = time.time()
+        payload_json = json.dumps(payload, sort_keys=True)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO run_events(session_id, run_id, ts, event_type, payload)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (session_id, run_id, now, event_type, payload_json),
+                )
+                event_id = int(cur.lastrowid)
+                conn.commit()
+            finally:
+                conn.close()
+
+        if self._audit_log_path is not None:
+            self._audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(
+                {
+                    "id": event_id,
+                    "ts": now,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "event_type": event_type,
+                    "payload": payload,
+                },
+                sort_keys=True,
+            )
+            with open(self._audit_log_path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+
+        return event_id
+
+    def list_events(self, *, session_id: str, since_id: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, run_id, ts, event_type, payload
+                    FROM run_events
+                    WHERE session_id = ? AND id > ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (session_id, since_id, max(1, limit)),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [
+            {
+                "id": int(row["id"]),
+                "run_id": row["run_id"],
+                "ts": row["ts"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+
+    def list_run_events(self, *, run_id: str, limit: int = 2000) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, session_id, ts, event_type, payload
+                    FROM run_events
+                    WHERE run_id = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (run_id, max(1, limit)),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [
+            {
+                "id": int(row["id"]),
+                "session_id": row["session_id"],
+                "ts": row["ts"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+
+    def create_approval(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        fingerprint: str,
+        reason: str,
+    ) -> str:
+        approval_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO approvals(
+                        id, session_id, run_id, tool_name, tool_input, fingerprint,
+                        reason, status, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        approval_id,
+                        session_id,
+                        run_id,
+                        tool_name,
+                        json.dumps(tool_input, sort_keys=True),
+                        fingerprint,
+                        reason,
+                        "pending",
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return approval_id
+
+    def find_approval_decision(self, *, session_id: str, fingerprint: str) -> str | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT status FROM approvals
+                    WHERE session_id = ? AND fingerprint = ? AND status IN ('approved', 'rejected')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (session_id, fingerprint),
+                ).fetchone()
+            finally:
+                conn.close()
+        return None if row is None else str(row["status"])
+
+    def list_approvals(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str = "pending",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        where = ["status = ?"]
+        params: list[Any] = [status]
+        if session_id is not None:
+            where.append("session_id = ?")
+            params.append(session_id)
+
+        sql = (
+            "SELECT id, session_id, run_id, tool_name, tool_input, reason, status, "
+            "created_at, decided_at, decision_note "
+            "FROM approvals WHERE " + " AND ".join(where) + " ORDER BY created_at DESC LIMIT ?"
+        )
+        params.append(max(1, limit))
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(sql, tuple(params)).fetchall()
+            finally:
+                conn.close()
+
+        return [
+            {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "run_id": row["run_id"],
+                "tool_name": row["tool_name"],
+                "tool_input": json.loads(row["tool_input"]),
+                "reason": row["reason"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "decided_at": row["decided_at"],
+                "decision_note": row["decision_note"],
+            }
+            for row in rows
+        ]
+
+    def set_approval_decision(self, *, approval_id: str, approved: bool, note: str | None = None) -> dict[str, Any] | None:
+        status = "approved" if approved else "rejected"
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE approvals
+                    SET status = ?, decided_at = ?, decision_note = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (status, now, note or "", approval_id),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    row = conn.execute(
+                        """
+                        SELECT id, session_id, run_id, tool_name, tool_input, reason,
+                               status, created_at, decided_at, decision_note
+                        FROM approvals WHERE id = ?
+                        """,
+                        (approval_id,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT id, session_id, run_id, tool_name, tool_input, reason,
+                               status, created_at, decided_at, decision_note
+                        FROM approvals WHERE id = ?
+                        """,
+                        (approval_id,),
+                    ).fetchone()
+            finally:
+                conn.close()
+
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "run_id": row["run_id"],
+            "tool_name": row["tool_name"],
+            "tool_input": json.loads(row["tool_input"]),
+            "reason": row["reason"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "decided_at": row["decided_at"],
+            "decision_note": row["decision_note"],
+        }
+
+    def add_artifact(self, *, run_id: str, kind: str, path: str) -> str:
+        artifact_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO artifacts(id, run_id, kind, path, created_at) VALUES(?, ?, ?, ?, ?)",
+                    (artifact_id, run_id, kind, path, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return artifact_id
+
+    def list_artifacts(self, *, run_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, kind, path, created_at FROM artifacts WHERE run_id = ? ORDER BY created_at ASC",
+                    (run_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+        return [
+            {
+                "id": row["id"],
+                "kind": row["kind"],
+                "path": row["path"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def append_usage(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        metric: str,
+        amount: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO usage_ledger(session_id, run_id, ts, metric, amount, metadata)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        run_id,
+                        time.time(),
+                        metric,
+                        float(amount),
+                        json.dumps(metadata or {}, sort_keys=True),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def metrics_summary(self) -> dict[str, Any]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                run_rows = conn.execute(
+                    "SELECT status, started_at, completed_at FROM runs WHERE completed_at IS NOT NULL"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        latencies: list[float] = []
+        successes = 0
+        failures = 0
+        approvals = 0
+
+        for row in run_rows:
+            status = row["status"]
+            if status == "completed":
+                successes += 1
+            elif status == "approval_required":
+                approvals += 1
+            else:
+                failures += 1
+            latency = float(row["completed_at"] - row["started_at"])
+            if latency >= 0:
+                latencies.append(latency)
+
+        latencies.sort()
+
+        def pct(values: list[float], p: float) -> float:
+            if not values:
+                return 0.0
+            idx = int((len(values) - 1) * p)
+            return values[idx]
+
+        return {
+            "run_count": len(run_rows),
+            "completed": successes,
+            "failed": failures,
+            "approval_required": approvals,
+            "latency_p50": pct(latencies, 0.5),
+            "latency_p95": pct(latencies, 0.95),
+            "success_rate": (successes / len(run_rows)) if run_rows else 0.0,
+        }
