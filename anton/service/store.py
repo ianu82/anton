@@ -132,6 +132,29 @@ class ServiceStore:
                     CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_id
                     ON skill_versions(skill_id, created_at DESC);
 
+                    CREATE TABLE IF NOT EXISTS scheduled_runs (
+                      id TEXT PRIMARY KEY,
+                      name TEXT NOT NULL,
+                      session_id TEXT NOT NULL,
+                      skill_id TEXT NOT NULL,
+                      skill_version INTEGER,
+                      params TEXT NOT NULL,
+                      interval_seconds INTEGER NOT NULL,
+                      next_run_at REAL NOT NULL,
+                      status TEXT NOT NULL,
+                      last_run_id TEXT,
+                      last_run_at REAL,
+                      created_at REAL NOT NULL,
+                      updated_at REAL NOT NULL,
+                      FOREIGN KEY(session_id) REFERENCES sessions(id),
+                      FOREIGN KEY(skill_id) REFERENCES skills(id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status_next
+                    ON scheduled_runs(status, next_run_at);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_runs_session_id
+                    ON scheduled_runs(session_id, created_at DESC);
+
                     CREATE TABLE IF NOT EXISTS usage_ledger (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
                       session_id TEXT NOT NULL,
@@ -930,6 +953,179 @@ class ServiceStore:
             "required_params": json.loads(version_row["required_params"]),
             "created_at": version_row["created_at"],
         }
+
+    def create_schedule(
+        self,
+        *,
+        name: str,
+        session_id: str,
+        skill_id: str,
+        skill_version: int | None,
+        params: dict[str, str],
+        interval_seconds: int,
+        start_at: float,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        schedule_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO scheduled_runs(
+                      id, name, session_id, skill_id, skill_version, params,
+                      interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                      created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        schedule_id,
+                        name,
+                        session_id,
+                        skill_id,
+                        skill_version,
+                        json.dumps(params, sort_keys=True),
+                        int(interval_seconds),
+                        float(start_at),
+                        status,
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        schedule = self.get_schedule(schedule_id)
+        if schedule is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"Schedule '{schedule_id}' was created but could not be loaded.")
+        return schedule
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id, name, session_id, skill_id, skill_version, params,
+                           interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                           created_at, updated_at
+                    FROM scheduled_runs
+                    WHERE id = ?
+                    """,
+                    (schedule_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "session_id": row["session_id"],
+            "skill_id": row["skill_id"],
+            "skill_version": row["skill_version"],
+            "params": json.loads(row["params"]),
+            "interval_seconds": int(row["interval_seconds"]),
+            "next_run_at": row["next_run_at"],
+            "status": row["status"],
+            "last_run_id": row["last_run_id"],
+            "last_run_at": row["last_run_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_schedules(self, *, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        where = ""
+        params: tuple[Any, ...]
+        if status is None:
+            params = (max(1, limit),)
+        else:
+            where = "WHERE status = ? "
+            params = (status, max(1, limit))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, session_id, skill_id, skill_version, params,
+                           interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                           created_at, updated_at
+                    FROM scheduled_runs
+                    """
+                    + where
+                    + "ORDER BY created_at DESC LIMIT ?",
+                    params,
+                ).fetchall()
+            finally:
+                conn.close()
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "session_id": row["session_id"],
+                "skill_id": row["skill_id"],
+                "skill_version": row["skill_version"],
+                "params": json.loads(row["params"]),
+                "interval_seconds": int(row["interval_seconds"]),
+                "next_run_at": row["next_run_at"],
+                "status": row["status"],
+                "last_run_id": row["last_run_id"],
+                "last_run_at": row["last_run_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def record_schedule_trigger(self, *, schedule_id: str, run_id: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT interval_seconds
+                    FROM scheduled_runs
+                    WHERE id = ?
+                    """,
+                    (schedule_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                next_run = now + int(row["interval_seconds"])
+                conn.execute(
+                    """
+                    UPDATE scheduled_runs
+                    SET last_run_id = ?, last_run_at = ?, next_run_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (run_id, now, next_run, now, schedule_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_schedule(schedule_id)
+
+    def set_schedule_status(self, *, schedule_id: str, status: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE scheduled_runs
+                    SET status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, now, schedule_id),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    return None
+            finally:
+                conn.close()
+        return self.get_schedule(schedule_id)
 
     def append_usage(
         self,

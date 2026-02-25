@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sqlite3
-from string import Formatter
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from anton.config.settings import AntonSettings
 from anton.service.runtime import RuntimeManager
+from anton.service.skills import extract_template_fields, render_prompt_template
 from anton.service.store import ServiceStore
 
 
@@ -52,33 +53,21 @@ class SkillRunRequest(BaseModel):
     wait_timeout_seconds: float = 300.0
 
 
-def _extract_template_fields(prompt_template: str) -> list[str]:
-    fields: set[str] = set()
-    for _literal, field_name, _format_spec, _conversion in Formatter().parse(prompt_template):
-        if field_name is None:
-            continue
-        field = field_name.strip()
-        if not field:
-            continue
-        if "." in field or "[" in field or "]" in field:
-            raise ValueError(f"Unsupported placeholder '{field}'. Use simple names like '{{metric}}'.")
-        fields.add(field)
-    return sorted(fields)
+class ScheduleCreateRequest(BaseModel):
+    name: str | None = None
+    session_id: str
+    skill_id: str
+    skill_version: int | None = None
+    params: dict[str, str] | None = None
+    interval_seconds: int = 3600
+    start_in_seconds: int = 0
+    active: bool = True
 
 
-def _render_prompt_template(prompt_template: str, *, required_params: list[str], params: dict[str, str] | None) -> str:
-    provided = dict(params or {})
-    missing = [field for field in required_params if field not in provided]
-    if missing:
-        missing_csv = ", ".join(sorted(missing))
-        raise ValueError(f"Missing required skill params: {missing_csv}")
-    try:
-        rendered = prompt_template.format(**provided)
-    except KeyError as exc:
-        raise ValueError(f"Missing required skill param: {exc.args[0]}") from exc
-    if not rendered.strip():
-        raise ValueError("Rendered skill prompt is empty.")
-    return rendered
+class ScheduleTriggerRequest(BaseModel):
+    idempotency_key: str | None = None
+    wait_for_completion: bool = False
+    wait_timeout_seconds: float = 300.0
 
 
 def create_app(settings: AntonSettings | None = None) -> FastAPI:
@@ -104,6 +93,39 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
     app.state.settings = resolved_settings
     app.state.store = store
     app.state.runtime = runtime
+
+    async def _run_skill_once(
+        *,
+        skill_id: str,
+        version: int | None,
+        session_id: str,
+        params: dict[str, str] | None,
+        idempotency_key: str | None,
+        wait_for_completion: bool,
+        wait_timeout_seconds: float,
+    ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+        template = store.get_skill_template(skill_id=skill_id, version=version)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Unknown skill_id/version combination for '{skill_id}'.")
+        try:
+            rendered_prompt = render_prompt_template(
+                template["prompt_template"],
+                required_params=template["required_params"],
+                params=params,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            result = await runtime.run_turn(
+                session_id=session_id,
+                message=rendered_prompt,
+                idempotency_key=idempotency_key,
+                wait_for_completion=wait_for_completion,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return template, rendered_prompt, result
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -205,7 +227,7 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         if not prompt_template:
             raise HTTPException(status_code=400, detail="Skill prompt_template cannot be empty.")
         try:
-            required_params = _extract_template_fields(prompt_template)
+            required_params = extract_template_fields(prompt_template)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
@@ -236,7 +258,7 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         if not prompt_template:
             raise HTTPException(status_code=400, detail="Skill prompt_template cannot be empty.")
         try:
-            required_params = _extract_template_fields(prompt_template)
+            required_params = extract_template_fields(prompt_template)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         skill = store.add_skill_version(
@@ -250,33 +272,106 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
 
     @app.post("/skills/{skill_id}/run")
     async def run_skill(skill_id: str, req: SkillRunRequest) -> dict[str, Any]:
-        template = store.get_skill_template(skill_id=skill_id, version=req.version)
-        if template is None:
-            raise HTTPException(status_code=404, detail=f"Unknown skill_id/version combination for '{skill_id}'.")
-        try:
-            rendered_prompt = _render_prompt_template(
-                template["prompt_template"],
-                required_params=template["required_params"],
-                params=req.params,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            result = await runtime.run_turn(
-                session_id=req.session_id,
-                message=rendered_prompt,
-                idempotency_key=req.idempotency_key,
-                wait_for_completion=req.wait_for_completion,
-                wait_timeout_seconds=req.wait_timeout_seconds,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        template, rendered_prompt, result = await _run_skill_once(
+            skill_id=skill_id,
+            version=req.version,
+            session_id=req.session_id,
+            params=req.params,
+            idempotency_key=req.idempotency_key,
+            wait_for_completion=req.wait_for_completion,
+            wait_timeout_seconds=req.wait_timeout_seconds,
+        )
         return {
             "skill_id": skill_id,
             "skill_version": template["version"],
             "rendered_prompt": rendered_prompt,
             **result,
         }
+
+    @app.post("/scheduled-runs")
+    async def create_schedule(req: ScheduleCreateRequest) -> dict[str, Any]:
+        if req.interval_seconds < 1:
+            raise HTTPException(status_code=400, detail="interval_seconds must be >= 1.")
+        if req.start_in_seconds < 0:
+            raise HTTPException(status_code=400, detail="start_in_seconds must be >= 0.")
+        if store.get_session(req.session_id) is None:
+            raise HTTPException(status_code=404, detail=f"Unknown session_id '{req.session_id}'.")
+        template = store.get_skill_template(skill_id=req.skill_id, version=req.skill_version)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Unknown skill_id/version combination for '{req.skill_id}'.")
+        try:
+            render_prompt_template(
+                template["prompt_template"],
+                required_params=template["required_params"],
+                params=req.params,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        schedule_name = req.name.strip() if req.name else f"{template['name']}-every-{req.interval_seconds}s"
+        if not schedule_name:
+            raise HTTPException(status_code=400, detail="Schedule name cannot be empty.")
+
+        return store.create_schedule(
+            name=schedule_name,
+            session_id=req.session_id,
+            skill_id=req.skill_id,
+            skill_version=req.skill_version,
+            params=req.params or {},
+            interval_seconds=req.interval_seconds,
+            start_at=time.time() + req.start_in_seconds,
+            status=("active" if req.active else "paused"),
+        )
+
+    @app.get("/scheduled-runs")
+    async def list_schedules(status: str | None = None, limit: int = 200) -> dict[str, Any]:
+        return {"scheduled_runs": store.list_schedules(status=status, limit=limit)}
+
+    @app.get("/scheduled-runs/{schedule_id}")
+    async def get_schedule(schedule_id: str) -> dict[str, Any]:
+        schedule = store.get_schedule(schedule_id)
+        if schedule is None:
+            raise HTTPException(status_code=404, detail=f"Unknown schedule_id '{schedule_id}'.")
+        return schedule
+
+    @app.post("/scheduled-runs/{schedule_id}/trigger")
+    async def trigger_schedule(schedule_id: str, req: ScheduleTriggerRequest) -> dict[str, Any]:
+        schedule = store.get_schedule(schedule_id)
+        if schedule is None:
+            raise HTTPException(status_code=404, detail=f"Unknown schedule_id '{schedule_id}'.")
+
+        template, rendered_prompt, result = await _run_skill_once(
+            skill_id=schedule["skill_id"],
+            version=schedule["skill_version"],
+            session_id=schedule["session_id"],
+            params=schedule["params"],
+            idempotency_key=req.idempotency_key,
+            wait_for_completion=req.wait_for_completion,
+            wait_timeout_seconds=req.wait_timeout_seconds,
+        )
+        updated = store.record_schedule_trigger(schedule_id=schedule_id, run_id=result["run_id"])
+        return {
+            "schedule_id": schedule_id,
+            "skill_id": template["skill_id"],
+            "skill_version": template["version"],
+            "rendered_prompt": rendered_prompt,
+            "schedule": updated,
+            **result,
+        }
+
+    @app.post("/scheduled-runs/{schedule_id}/pause")
+    async def pause_schedule(schedule_id: str) -> dict[str, Any]:
+        schedule = store.set_schedule_status(schedule_id=schedule_id, status="paused")
+        if schedule is None:
+            raise HTTPException(status_code=404, detail=f"Unknown schedule_id '{schedule_id}'.")
+        return schedule
+
+    @app.post("/scheduled-runs/{schedule_id}/resume")
+    async def resume_schedule(schedule_id: str) -> dict[str, Any]:
+        schedule = store.set_schedule_status(schedule_id=schedule_id, status="active")
+        if schedule is None:
+            raise HTTPException(status_code=404, detail=f"Unknown schedule_id '{schedule_id}'.")
+        return schedule
 
     @app.get("/metrics")
     async def metrics() -> dict[str, Any]:
