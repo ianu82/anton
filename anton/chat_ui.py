@@ -49,7 +49,8 @@ def _tool_display_text(name: str, input_json: str) -> str:
         updates = data.get("updates", [])
         desc = f"{len(updates)} file(s)"
     elif name == "request_secret":
-        desc = data.get("variable_name", "")
+        var = data.get("variable_name", "")
+        desc = f"{var} — enter below" if var else "enter below"
 
     if desc:
         if len(desc) > _MAX_DESC:

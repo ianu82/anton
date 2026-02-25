@@ -228,14 +228,25 @@ def prompt_secret(console, var_name: str, prompt_text: str) -> str:
 
     Shows a contextual banner explaining what's needed and why.
     Input is hidden (standard password behavior).
-    Returns the stripped value (may be empty).
+    If the user enters nothing, asks to confirm empty value or retry.
+    Returns the stripped value (may be empty if confirmed).
     """
     console.print()
     console.print(f"  [bold]Secret requested:[/] [anton.cyan]{var_name}[/]")
     console.print(f"  {prompt_text}")
     console.print(f"  [anton.muted]Stored in .anton/.env · never shown to the AI · input is hidden[/]")
-    value = _password_input(f"  {var_name}> ")
-    return value.strip()
+
+    while True:
+        value = _password_input(f"  {var_name}> ")
+        value = value.strip()
+        if value:
+            return value
+        # Empty input — confirm or retry
+        answer = console.input(
+            "  [anton.warning]No value entered.[/] Use empty password? [dim](y to confirm, Enter to retry):[/] "
+        ).strip().lower()
+        if answer in ("y", "yes"):
+            return ""
 
 
 def handle_request_secret(session: ChatSession, tc_input: dict) -> str:

@@ -422,6 +422,8 @@ class Scratchpad:
                 var_name = payload["variable_name"]
                 prompt_text = payload.get("prompt_text", f"Enter value for {var_name}")
 
+                yield f"Waiting for secret '{var_name}' — enter below"
+
                 value: str | None = None
                 if self._secret_handler:
                     value = self._secret_handler(var_name, prompt_text)
@@ -431,11 +433,11 @@ class Scratchpad:
                     self._proc.stdin.write(f"{_SET_ENV_MARKER} {env_msg}\n".encode())
                     self._proc.stdin.write(f"{_SECRET_DONE_MARKER}\n".encode())
                     await self._proc.stdin.drain()
-                    yield f"Secret '{var_name}' provided"
+                    yield f"Secret '{var_name}' received"
                 else:
                     self._proc.stdin.write(f"{_SECRET_DONE_MARKER} error\n".encode())
                     await self._proc.stdin.drain()
-                    yield f"Secret '{var_name}' not provided"
+                    yield f"Secret '{var_name}' skipped"
                 continue
 
             if line == _RESULT_START:
