@@ -56,6 +56,9 @@ class AntonSettings(BaseSettings):
     max_estimated_seconds_without_approval: int = 90
     connector_max_query_limit: int = 10_000
 
+    # Service runtime mode
+    service_worker_mode: str = "local"
+
     _workspace: Path = PrivateAttr(default=None)
 
     @property
