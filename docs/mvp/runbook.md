@@ -1,0 +1,41 @@
+# Runbook
+
+## Local Startup
+
+1. Configure provider credentials in `.anton/.env`.
+2. (Optional) Configure connector bridge via env vars:
+   - `ANTON_CONNECTOR_MODE=http`
+   - `ANTON_CONNECTOR_API_BASE_URL=https://connector.internal`
+   - `ANTON_CONNECTOR_API_TOKEN=...`
+3. Start service:
+
+```bash
+anton serve --host 127.0.0.1 --port 8000
+```
+
+## Health Checks
+
+- `GET /health` must return `{ "status": "ok" }`.
+- `GET /metrics` should show non-zero runs after smoke tests.
+
+## Smoke Test
+
+1. `POST /sessions`
+2. `POST /sessions/{id}/turn`
+3. `GET /sessions/{id}/events`
+4. `GET /runs/{run_id}/trace`
+
+## Approval Handling
+
+1. Query `GET /approvals` for `pending` items.
+2. Approve/reject via `POST /approvals/{id}/decision`.
+3. Re-run turn after approval if the run ended with `approval_required`.
+
+## Budget and Policy Tuning
+
+Tune via env/settings:
+
+- `ANTON_MAX_TOKENS_PER_RUN`
+- `ANTON_MAX_TOOL_CALLS_PER_RUN`
+- `ANTON_MAX_ESTIMATED_SECONDS_WITHOUT_APPROVAL`
+- `ANTON_CONNECTOR_MAX_QUERY_LIMIT`

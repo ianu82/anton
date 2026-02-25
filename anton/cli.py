@@ -360,6 +360,68 @@ def dashboard() -> None:
     render_dashboard(console)
 
 
+@app.command("serve")
+def serve(
+    ctx: typer.Context,
+    host: str = typer.Option("127.0.0.1", help="Bind host"),
+    port: int = typer.Option(8000, help="Bind port"),
+    reload: bool = typer.Option(False, help="Enable auto-reload"),
+) -> None:
+    """Run the Anton MVP service API."""
+    settings = _get_settings(ctx)
+    _ensure_workspace(settings)
+    _ensure_api_key(settings)
+
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - import guard
+        console.print("[anton.error]Missing service dependencies.[/]")
+        console.print("[anton.muted]Install with: pip install 'anton[service]'[/]")
+        raise typer.Exit(1) from exc
+
+    from anton.service import create_app
+
+    app_instance = create_app(settings)
+    uvicorn.run(app_instance, host=host, port=port, reload=reload)
+
+
+@app.command("eval-mvp")
+def eval_mvp(
+    ctx: typer.Context,
+    tasks: str = typer.Option(..., "--tasks", "-t", help="Path to JSON task suite"),
+    output: str = typer.Option(".anton/eval/summary.json", "--output", "-o", help="Path to write summary JSON"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace root for evaluation runs"),
+) -> None:
+    """Run the MVP benchmark suite and write a summary report."""
+    settings = _get_settings(ctx)
+    _ensure_workspace(settings)
+    _ensure_api_key(settings)
+
+    from anton.service.eval import run_eval_sync
+
+    tasks_path = Path(tasks).expanduser().resolve()
+    if not tasks_path.exists():
+        console.print(f"[anton.error]Task file not found: {tasks_path}[/]")
+        raise typer.Exit(1)
+
+    output_path = Path(output).expanduser().resolve()
+    workspace_root = Path(workspace).expanduser().resolve() if workspace else None
+    summary = run_eval_sync(
+        settings=settings,
+        tasks_path=tasks_path,
+        output_path=output_path,
+        workspace_root=workspace_root,
+    )
+
+    console.print("[anton.success]Evaluation complete.[/]")
+    console.print(f"  Runs: {summary['run_count']}")
+    console.print(f"  Passed: {summary['passed_count']}")
+    console.print(f"  Pass rate: {summary['pass_rate']:.2%}")
+    console.print(f"  p50 latency: {summary['latency_p50']:.2f}s")
+    console.print(f"  p95 latency: {summary['latency_p95']:.2f}s")
+    console.print(f"  Report: {output_path}")
+
+
 @app.command("sessions")
 def list_sessions(ctx: typer.Context) -> None:
     """List recent sessions."""

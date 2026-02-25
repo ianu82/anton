@@ -119,6 +119,34 @@ REQUEST_SECRET_TOOL = {
     },
 }
 
+CONNECTOR_TOOL = {
+    "name": "connector",
+    "description": (
+        "Access configured data connectors through a governed adapter layer. "
+        "Use this for schema discovery, query pushdown, and sampling data before "
+        "moving results into scratchpad transformations.\n\n"
+        "Actions:\n"
+        "- list: List available connectors\n"
+        "- schema: Describe a connector's tables/columns\n"
+        "- query: Execute a read query with pushdown at the source\n"
+        "- sample: Read a limited sample from a table\n"
+        "- write: Execute write queries (requires policy approval by default)\n\n"
+        "Prefer connector query/sample over pulling raw data into Python first. "
+        "Use connector_id to target the source."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "schema", "query", "sample", "write"]},
+            "connector_id": {"type": "string", "description": "Connector identifier"},
+            "query": {"type": "string", "description": "SQL or source-native query"},
+            "table": {"type": "string", "description": "Table name for sample action"},
+            "limit": {"type": "integer", "description": "Row limit for query/sample actions"},
+        },
+        "required": ["action"],
+    },
+}
+
 
 SCRATCHPAD_TOOL = {
     "name": "scratchpad",
@@ -279,6 +307,54 @@ def handle_request_secret(session: ChatSession, tc_input: dict) -> str:
     return f"Variable {var_name} has been set in .anton/.env. You can now use it."
 
 
+async def handle_connector(session: ChatSession, tc_input: dict) -> str:
+    """Dispatch a connector tool call by action."""
+    if session._connector_hub is None:
+        return "Connector tool is not configured for this runtime."
+
+    from anton.connectors import ConnectorError
+
+    action = str(tc_input.get("action", "")).lower()
+    connector_id = str(tc_input.get("connector_id", ""))
+    limit = tc_input.get("limit", 1000)
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = 1000
+
+    try:
+        if action == "list":
+            return await session._connector_hub.list_connectors()
+        if action == "schema":
+            if not connector_id:
+                return "connector_id is required for schema action."
+            return await session._connector_hub.schema(connector_id)
+        if action == "query":
+            if not connector_id:
+                return "connector_id is required for query action."
+            query = str(tc_input.get("query", "")).strip()
+            if not query:
+                return "query is required for query action."
+            return await session._connector_hub.query(connector_id, query, limit=max(1, parsed_limit))
+        if action == "sample":
+            if not connector_id:
+                return "connector_id is required for sample action."
+            table = str(tc_input.get("table", "")).strip()
+            if not table:
+                return "table is required for sample action."
+            return await session._connector_hub.sample(connector_id, table, limit=max(1, parsed_limit))
+        if action == "write":
+            if not connector_id:
+                return "connector_id is required for write action."
+            query = str(tc_input.get("query", "")).strip()
+            if not query:
+                return "query is required for write action."
+            return await session._connector_hub.write(connector_id, query)
+        return f"Unknown connector action: {action}"
+    except ConnectorError as exc:
+        return f"Connector action failed: {exc}"
+
+
 async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
     """Validate and prepare a scratchpad exec call.
 
@@ -401,6 +477,8 @@ async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) ->
         return handle_update_context(session, tc_input)
     elif tool_name == "request_secret":
         return handle_request_secret(session, tc_input)
+    elif tool_name == "connector":
+        return await handle_connector(session, tc_input)
     elif tool_name == "scratchpad":
         return await handle_scratchpad(session, tc_input)
     else:

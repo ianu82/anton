@@ -23,6 +23,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+service = [
+    "fastapi>=0.116",
+    "uvicorn>=0.35",
+]
 clipboard = [
     "Pillow>=9.0",
 ]
