@@ -24,6 +24,7 @@ anton serve --host 127.0.0.1 --port 8000
 2. `POST /sessions/{id}/turn`
 3. `GET /sessions/{id}/events`
 4. `GET /runs/{run_id}/trace`
+5. `POST /runs/{run_id}/cancel` (optional cancellation check)
 
 ## Approval Handling
 
@@ -39,3 +40,5 @@ Tune via env/settings:
 - `ANTON_MAX_TOOL_CALLS_PER_RUN`
 - `ANTON_MAX_ESTIMATED_SECONDS_WITHOUT_APPROVAL`
 - `ANTON_CONNECTOR_MAX_QUERY_LIMIT`
+- `ANTON_SERVICE_WORKER_MODE` (`local` or `queue`)
+- `ANTON_SERVICE_QUEUE_WORKER_COUNT`

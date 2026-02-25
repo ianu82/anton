@@ -27,6 +27,14 @@ class SessionRuntime:
     lock: asyncio.Lock
 
 
+@dataclass
+class QueuedRunRequest:
+    run_id: str
+    session_id: str
+    message: str
+    run: dict[str, Any]
+
+
 class RunGovernance:
     def __init__(
         self,
@@ -113,6 +121,90 @@ class RuntimeManager:
         self._runtimes: dict[str, SessionRuntime] = {}
         self._manager_lock = asyncio.Lock()
 
+        self._worker_mode = getattr(settings, "service_worker_mode", "local").strip().lower() or "local"
+        if self._worker_mode not in {"local", "queue"}:
+            self._worker_mode = "local"
+
+        self._run_queue: asyncio.Queue[QueuedRunRequest] | None = None
+        self._queue_workers: list[asyncio.Task] = []
+        configured_workers = int(getattr(settings, "service_queue_worker_count", 2))
+        self._queue_worker_count = max(1, configured_workers)
+        self._workers_started = False
+
+        self._active_run_tasks: dict[str, asyncio.Task] = {}
+        self._run_futures: dict[str, asyncio.Future] = {}
+
+    async def start(self) -> None:
+        if self._worker_mode == "queue":
+            await self._ensure_workers_started()
+
+    async def close(self) -> None:
+        for task in list(self._active_run_tasks.values()):
+            task.cancel()
+
+        if self._queue_workers:
+            for worker in self._queue_workers:
+                worker.cancel()
+            await asyncio.gather(*self._queue_workers, return_exceptions=True)
+            self._queue_workers.clear()
+
+        for future in list(self._run_futures.values()):
+            if not future.done():
+                future.cancel()
+        self._run_futures.clear()
+
+        for runtime in list(self._runtimes.values()):
+            await runtime.session.close()
+
+    async def _ensure_workers_started(self) -> None:
+        if self._workers_started:
+            return
+        async with self._manager_lock:
+            if self._workers_started:
+                return
+            self._run_queue = asyncio.Queue()
+            for idx in range(self._queue_worker_count):
+                task = asyncio.create_task(self._queue_worker_loop(idx), name=f"anton-queue-worker-{idx}")
+                self._queue_workers.append(task)
+            self._workers_started = True
+
+    async def _queue_worker_loop(self, worker_index: int) -> None:
+        assert self._run_queue is not None
+        while True:
+            request = await self._run_queue.get()
+            try:
+                self._store.set_run_status(run_id=request.run_id, status="running")
+                result = await self._execute_run(
+                    run_id=request.run_id,
+                    session_id=request.session_id,
+                    message=request.message,
+                    run=request.run,
+                )
+                future = self._run_futures.pop(request.run_id, None)
+                if future is not None and not future.done():
+                    future.set_result(result)
+            except Exception as exc:
+                self._store.complete_run(
+                    run_id=request.run_id,
+                    status="failed",
+                    response="",
+                    error=f"Worker execution failed: {exc}",
+                    input_tokens=0,
+                    output_tokens=0,
+                    pending_approval_ids=[],
+                )
+                future = self._run_futures.pop(request.run_id, None)
+                if future is not None and not future.done():
+                    future.set_exception(exc)
+            finally:
+                self._run_queue.task_done()
+                self._store.append_event(
+                    session_id=request.session_id,
+                    run_id=request.run_id,
+                    event_type="worker_finished",
+                    payload={"worker_index": worker_index},
+                )
+
     async def create_session(
         self,
         *,
@@ -164,11 +256,188 @@ class RuntimeManager:
         *,
         session_id: str,
         message: str,
+        idempotency_key: str | None = None,
+        wait_for_completion: bool = True,
+        wait_timeout_seconds: float = 300.0,
+    ) -> dict[str, Any]:
+        await self.get_or_restore_session(session_id)
+
+        if idempotency_key:
+            existing_id = self._store.run_id_for_idempotency_key(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+            )
+            if existing_id:
+                existing = self._store.get_run(existing_id)
+                if existing is not None:
+                    return {
+                        "run_id": existing_id,
+                        "status": existing["status"],
+                        "reply": existing.get("response", "") or "",
+                        "error": existing.get("error"),
+                        "pending_approval_ids": existing.get("pending_approval_ids", []),
+                        "total_tokens": int(existing.get("input_tokens", 0)) + int(existing.get("output_tokens", 0)),
+                        "tool_calls": 0,
+                        "run": existing,
+                        "reused": True,
+                    }
+
+        run_id = uuid.uuid4().hex[:12]
+        if idempotency_key:
+            reserved_id = self._store.reserve_idempotency_key(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                run_id=run_id,
+            )
+            if reserved_id != run_id:
+                existing = self._store.get_run(reserved_id)
+                if existing is None:
+                    raise RuntimeError(
+                        f"Idempotency key '{idempotency_key}' points to missing run '{reserved_id}'."
+                    )
+                return {
+                    "run_id": reserved_id,
+                    "status": existing["status"],
+                    "reply": existing.get("response", "") or "",
+                    "error": existing.get("error"),
+                    "pending_approval_ids": existing.get("pending_approval_ids", []),
+                    "total_tokens": int(existing.get("input_tokens", 0)) + int(existing.get("output_tokens", 0)),
+                    "tool_calls": 0,
+                    "run": existing,
+                    "reused": True,
+                }
+
+        run = self._store.create_run(
+            run_id=run_id,
+            session_id=session_id,
+            prompt=message,
+            worker_mode=self._worker_mode,
+        )
+
+        self._store.append_event(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="run_created",
+            payload={
+                "worker_mode": self._worker_mode,
+                "idempotency_key": idempotency_key or "",
+            },
+        )
+
+        if self._worker_mode == "queue":
+            await self._ensure_workers_started()
+            assert self._run_queue is not None
+
+            loop = asyncio.get_running_loop()
+            result_future: asyncio.Future = loop.create_future()
+            self._run_futures[run_id] = result_future
+            self._store.set_run_status(run_id=run_id, status="queued")
+
+            self._store.append_event(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="run_queued",
+                payload={
+                    "queue_depth": self._run_queue.qsize(),
+                },
+            )
+
+            await self._run_queue.put(
+                QueuedRunRequest(
+                    run_id=run_id,
+                    session_id=session_id,
+                    message=message,
+                    run=run,
+                )
+            )
+
+            if not wait_for_completion:
+                return {
+                    "run_id": run_id,
+                    "status": "queued",
+                    "reply": "",
+                    "error": None,
+                    "pending_approval_ids": [],
+                    "total_tokens": 0,
+                    "tool_calls": 0,
+                    "run": run,
+                    "reused": False,
+                }
+
+            try:
+                result = await asyncio.wait_for(result_future, timeout=max(1.0, wait_timeout_seconds))
+            except asyncio.TimeoutError:
+                return {
+                    "run_id": run_id,
+                    "status": "running",
+                    "reply": "",
+                    "error": None,
+                    "pending_approval_ids": [],
+                    "total_tokens": 0,
+                    "tool_calls": 0,
+                    "run": run,
+                    "reused": False,
+                }
+            return result
+
+        result = await self._execute_run(
+            run_id=run_id,
+            session_id=session_id,
+            message=message,
+            run=run,
+        )
+        result["reused"] = False
+        return result
+
+    async def cancel_run(self, run_id: str) -> dict[str, Any]:
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Unknown run_id '{run_id}'.")
+
+        if run.get("completed_at") is not None:
+            return {
+                "run_id": run_id,
+                "status": run["status"],
+                "cancel_requested": False,
+                "message": "Run already finished.",
+            }
+
+        updated = self._store.request_run_cancel(run_id)
+        if not updated:
+            return {
+                "run_id": run_id,
+                "status": run["status"],
+                "cancel_requested": False,
+                "message": "Run is already finalized.",
+            }
+
+        task = self._active_run_tasks.get(run_id)
+        if task is not None:
+            task.cancel()
+
+        self._store.append_event(
+            session_id=run["session_id"],
+            run_id=run_id,
+            event_type="run_cancel_requested",
+            payload={},
+        )
+
+        return {
+            "run_id": run_id,
+            "status": "cancellation_requested",
+            "cancel_requested": True,
+            "message": "Cancellation has been requested.",
+        }
+
+    async def _execute_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        message: str,
+        run: dict[str, Any],
     ) -> dict[str, Any]:
         runtime = await self.get_or_restore_session(session_id)
-        run_id = uuid.uuid4().hex[:12]
-
-        run = self._store.create_run(run_id=run_id, session_id=session_id, prompt=message)
 
         policy = PolicyEngine(
             PolicyConfig(
@@ -195,8 +464,35 @@ class RuntimeManager:
 
         reply = ""
         error: str | None = None
+        status = "running"
+
+        if self._store.is_run_cancel_requested(run_id):
+            status = "cancelled"
+            self._store.complete_run(
+                run_id=run_id,
+                status=status,
+                response="",
+                error=None,
+                input_tokens=0,
+                output_tokens=0,
+                pending_approval_ids=[],
+            )
+            return {
+                "run_id": run_id,
+                "status": status,
+                "reply": "",
+                "error": None,
+                "pending_approval_ids": [],
+                "total_tokens": 0,
+                "tool_calls": 0,
+                "run": run,
+            }
 
         async with runtime.lock:
+            run_task = asyncio.current_task()
+            if run_task is not None:
+                self._active_run_tasks[run_id] = run_task
+
             runtime.session.configure_run_hooks(
                 tool_gate=governance.tool_gate,
                 usage_hook=governance.usage_hook,
@@ -205,10 +501,12 @@ class RuntimeManager:
 
             try:
                 async for event in runtime.session.turn_stream(message):
+                    if self._store.is_run_cancel_requested(run_id):
+                        raise asyncio.CancelledError("Run cancelled by user request")
+
                     if isinstance(event, StreamTextDelta):
                         reply += event.text
                     elif isinstance(event, StreamComplete):
-                        # usage hook already handles usage accounting
                         self._store.append_event(
                             session_id=session_id,
                             run_id=run_id,
@@ -219,14 +517,18 @@ class RuntimeManager:
                                 "output_tokens": event.response.usage.output_tokens,
                             },
                         )
-            except Exception as exc:
+            except asyncio.CancelledError:
+                status = "cancelled"
+            except Exception as exc:  # pragma: no cover - defensive
                 error = str(exc)
+                status = "failed"
             finally:
                 runtime.session.configure_run_hooks(
                     tool_gate=None,
                     usage_hook=None,
                     audit_hook=None,
                 )
+                self._active_run_tasks.pop(run_id, None)
 
         after_artifacts = self._snapshot_artifacts(output_dir)
         new_files = sorted(after_artifacts - before_artifacts)
@@ -234,15 +536,15 @@ class RuntimeManager:
             kind = artifact.suffix.lstrip(".") or "file"
             self._store.add_artifact(run_id=run_id, kind=kind, path=str(artifact))
 
-        if error is not None:
-            status = "failed"
-            response = ""
-        elif governance.pending_approvals:
-            status = "approval_required"
-            response = reply
-        else:
-            status = "completed"
-            response = reply
+        if status == "running":
+            if error is not None:
+                status = "failed"
+            elif governance.pending_approvals:
+                status = "approval_required"
+            else:
+                status = "completed"
+
+        response = reply if status != "failed" else ""
 
         self._store.complete_run(
             run_id=run_id,
