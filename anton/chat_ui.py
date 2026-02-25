@@ -50,11 +50,13 @@ def _tool_display_text(name: str, input_json: str) -> str:
         desc = f"{len(updates)} file(s)"
     elif name == "request_secret":
         var = data.get("variable_name", "")
-        desc = f"{var} — enter below" if var else "enter below"
+        desc = f"Enter {var}" if var else ""
 
     if desc:
         if len(desc) > _MAX_DESC:
             desc = desc[:_MAX_DESC - 1] + "\u2026"
+        if name == "request_secret":
+            return f"{label}({desc}): "
         return f"{label}({desc})"
     return label
 
