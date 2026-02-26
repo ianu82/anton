@@ -162,3 +162,32 @@ def test_skill_rejects_complex_placeholder(tmp_path: Path, monkeypatch):
         )
         assert created.status_code == 400
         assert "Unsupported placeholder" in created.json()["detail"]
+
+
+def test_skill_run_rejects_zero_version(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: _TextOnlyLLM())
+
+    app = create_app(_build_settings(tmp_path))
+    with TestClient(app) as client:
+        skill = client.post(
+            "/skills",
+            json={
+                "name": f"version_zero_{uuid.uuid4().hex[:8]}",
+                "description": "Version check",
+                "prompt_template": "Summarize {metric}.",
+            },
+        ).json()
+        session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "skills-version-zero")}).json()[
+            "session_id"
+        ]
+
+        run = client.post(
+            f"/skills/{skill['id']}/run",
+            json={
+                "session_id": session_id,
+                "version": 0,
+                "params": {"metric": "churn"},
+            },
+        )
+        assert run.status_code == 400
+        assert "Skill version must be >= 1." in run.json()["detail"]

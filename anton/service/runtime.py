@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,11 +221,16 @@ class RuntimeManager:
         async with self._manager_lock:
             if assigned_id in self._runtimes:
                 raise ValueError(f"Session '{assigned_id}' already exists in runtime manager.")
-            self._store.create_session(
-                session_id=assigned_id,
-                workspace_path=str(workspace_root),
-                metadata=metadata,
-            )
+            if self._store.get_session(assigned_id) is not None:
+                raise ValueError(f"Session '{assigned_id}' already exists.")
+            try:
+                self._store.create_session(
+                    session_id=assigned_id,
+                    workspace_path=str(workspace_root),
+                    metadata=metadata,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"Session '{assigned_id}' already exists.") from exc
             runtime = self._build_runtime(assigned_id, workspace_root)
             self._runtimes[assigned_id] = runtime
 
@@ -382,14 +388,65 @@ class RuntimeManager:
                 }
             return result
 
-        result = await self._execute_run(
-            run_id=run_id,
-            session_id=session_id,
-            message=message,
-            run=run,
+        if wait_for_completion:
+            result = await self._execute_run(
+                run_id=run_id,
+                session_id=session_id,
+                message=message,
+                run=run,
+            )
+            result["reused"] = False
+            return result
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(
+            self._execute_run(
+                run_id=run_id,
+                session_id=session_id,
+                message=message,
+                run=run,
+            ),
+            name=f"anton-local-run-{run_id}",
         )
-        result["reused"] = False
-        return result
+        self._run_futures[run_id] = task
+
+        def _finalize_local_background_run(completed: asyncio.Task) -> None:
+            self._run_futures.pop(run_id, None)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                run_row = self._store.get_run(run_id)
+                if run_row is not None and run_row.get("completed_at") is None:
+                    self._store.complete_run(
+                        run_id=run_id,
+                        status="failed",
+                        response="",
+                        error=f"Background execution failed: {exc}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        pending_approval_ids=[],
+                    )
+                self._store.append_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="background_run_failed",
+                    payload={"error": str(exc)},
+                )
+
+        task.add_done_callback(_finalize_local_background_run)
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "reply": "",
+            "error": None,
+            "pending_approval_ids": [],
+            "total_tokens": 0,
+            "tool_calls": 0,
+            "run": run,
+            "reused": False,
+        }
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self._store.get_run(run_id)
