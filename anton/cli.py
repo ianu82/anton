@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import typer
@@ -134,6 +138,8 @@ app = typer.Typer(
     name="anton",
     help="Anton — a self-evolving autonomous system",
 )
+skills_app = typer.Typer(help="Manage service skills (requires anton serve).")
+schedules_app = typer.Typer(help="Manage scheduled runs (requires anton serve).")
 
 
 def _make_console() -> Console:
@@ -144,6 +150,67 @@ def _make_console() -> Console:
 
 
 console = _make_console()
+
+
+def _service_base_url(service_url: str | None) -> str:
+    url = service_url or os.environ.get("ANTON_SERVICE_BASE_URL", "http://127.0.0.1:8000")
+    return url.rstrip("/")
+
+
+def _parse_json_object(raw: str, label: str) -> dict[str, str]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        console.print(f"[anton.error]Invalid JSON for {label}: {exc}[/]")
+        raise typer.Exit(1) from exc
+    if not isinstance(parsed, dict):
+        console.print(f"[anton.error]{label} must be a JSON object.[/]")
+        raise typer.Exit(1)
+    normalized: dict[str, str] = {}
+    for key, value in parsed.items():
+        normalized[str(key)] = str(value)
+    return normalized
+
+
+def _service_request(
+    *,
+    method: str,
+    base_url: str,
+    path: str,
+    payload: dict | None = None,
+    query: dict[str, str | int | None] | None = None,
+) -> dict:
+    query_params = query or {}
+    compact_query = {k: v for k, v in query_params.items() if v is not None}
+    query_str = urllib.parse.urlencode(compact_query, doseq=True)
+    url = f"{base_url}{path}"
+    if query_str:
+        url = f"{url}?{query_str}"
+
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url=url, data=data, headers=headers, method=method.upper())
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.reason
+        body = exc.read().decode("utf-8")
+        if body:
+            try:
+                parsed = json.loads(body)
+                detail = parsed.get("detail", detail)
+            except json.JSONDecodeError:
+                detail = body
+        console.print(f"[anton.error]Service request failed ({exc.code}): {detail}[/]")
+        raise typer.Exit(1) from exc
+    except urllib.error.URLError as exc:
+        console.print(f"[anton.error]Could not reach service at {base_url}: {exc.reason}[/]")
+        raise typer.Exit(1) from exc
 
 
 def _get_settings(ctx: typer.Context):
@@ -501,7 +568,275 @@ def list_learnings(ctx: typer.Context) -> None:
     console.print(table)
 
 
+@skills_app.command("list")
+def skills_list(
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+    limit: int = typer.Option(200, "--limit", help="Max skills to return"),
+) -> None:
+    """List skills from the Anton service."""
+    base = _service_base_url(service_url)
+    resp = _service_request(method="GET", base_url=base, path="/skills", query={"limit": limit})
+    skills = resp.get("skills", [])
+    if not skills:
+        console.print("[dim]No skills found.[/]")
+        return
+
+    table = Table(title="Skills")
+    table.add_column("ID", style="anton.cyan")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Description")
+    for skill in skills:
+        table.add_row(
+            str(skill.get("id", "")),
+            str(skill.get("name", "")),
+            str(skill.get("latest_version", "")),
+            str(skill.get("description", "")),
+        )
+    console.print(table)
+
+
+@skills_app.command("show")
+def skills_show(
+    skill_id: str = typer.Argument(..., help="Skill ID"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Show skill details."""
+    base = _service_base_url(service_url)
+    skill = _service_request(method="GET", base_url=base, path=f"/skills/{skill_id}")
+    console.print_json(data=skill)
+
+
+@skills_app.command("create")
+def skills_create(
+    name: str = typer.Argument(..., help="Skill name"),
+    prompt_template: str = typer.Argument(..., help="Prompt template (e.g. 'Show {metric} for {period}.')"),
+    description: str = typer.Option("", "--description", help="Skill description"),
+    metadata: str = typer.Option("{}", "--metadata", help="Skill metadata as JSON object"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Create a new skill."""
+    base = _service_base_url(service_url)
+    metadata_obj = _parse_json_object(metadata, "metadata")
+    created = _service_request(
+        method="POST",
+        base_url=base,
+        path="/skills",
+        payload={
+            "name": name,
+            "description": description,
+            "prompt_template": prompt_template,
+            "metadata": metadata_obj,
+        },
+    )
+    console.print(f"[anton.success]Created skill {created.get('id')} ({created.get('name')}).[/]")
+    console.print_json(data=created)
+
+
+@skills_app.command("version")
+def skills_version(
+    skill_id: str = typer.Argument(..., help="Skill ID"),
+    prompt_template: str = typer.Argument(..., help="New prompt template"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Add a new version to an existing skill."""
+    base = _service_base_url(service_url)
+    updated = _service_request(
+        method="POST",
+        base_url=base,
+        path=f"/skills/{skill_id}/versions",
+        payload={"prompt_template": prompt_template},
+    )
+    console.print(f"[anton.success]Updated skill {skill_id} to version {updated.get('latest_version')}.[/]")
+    console.print_json(data=updated)
+
+
+@skills_app.command("run")
+def skills_run(
+    skill_id: str = typer.Argument(..., help="Skill ID"),
+    session_id: str = typer.Option(..., "--session-id", help="Target session ID"),
+    params: str = typer.Option("{}", "--params", help="Skill params as JSON object"),
+    version: int | None = typer.Option(None, "--version", help="Skill version (defaults to latest)"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key", help="Optional idempotency key"),
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for run completion"),
+    wait_timeout_seconds: float = typer.Option(300.0, "--wait-timeout-seconds", help="Run wait timeout"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Run a skill for a session."""
+    base = _service_base_url(service_url)
+    params_obj = _parse_json_object(params, "params")
+    result = _service_request(
+        method="POST",
+        base_url=base,
+        path=f"/skills/{skill_id}/run",
+        payload={
+            "session_id": session_id,
+            "params": params_obj,
+            "version": version,
+            "idempotency_key": idempotency_key,
+            "wait_for_completion": wait,
+            "wait_timeout_seconds": wait_timeout_seconds,
+        },
+    )
+    console.print(
+        f"[anton.success]Skill run {result.get('run_id')} status={result.get('status')} "
+        f"version={result.get('skill_version')}[/]"
+    )
+    reply = str(result.get("reply", "") or "")
+    if reply:
+        console.print(f"\n[bold]Reply:[/]\n{reply}")
+    console.print_json(data=result)
+
+
+@schedules_app.command("list")
+def schedules_list(
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+    status: str | None = typer.Option(None, "--status", help="Optional status filter: active or paused"),
+    limit: int = typer.Option(200, "--limit", help="Max schedules to return"),
+) -> None:
+    """List scheduled runs."""
+    base = _service_base_url(service_url)
+    resp = _service_request(
+        method="GET",
+        base_url=base,
+        path="/scheduled-runs",
+        query={"status": status, "limit": limit},
+    )
+    schedules = resp.get("scheduled_runs", [])
+    if not schedules:
+        console.print("[dim]No schedules found.[/]")
+        return
+
+    table = Table(title="Scheduled Runs")
+    table.add_column("ID", style="anton.cyan")
+    table.add_column("Name")
+    table.add_column("Session")
+    table.add_column("Skill")
+    table.add_column("Status")
+    table.add_column("Every(s)")
+    table.add_column("Next Run")
+    for item in schedules:
+        table.add_row(
+            str(item.get("id", "")),
+            str(item.get("name", "")),
+            str(item.get("session_id", "")),
+            str(item.get("skill_id", "")),
+            str(item.get("status", "")),
+            str(item.get("interval_seconds", "")),
+            str(item.get("next_run_at", "")),
+        )
+    console.print(table)
+
+
+@schedules_app.command("show")
+def schedules_show(
+    schedule_id: str = typer.Argument(..., help="Schedule ID"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Show one scheduled run."""
+    base = _service_base_url(service_url)
+    schedule = _service_request(method="GET", base_url=base, path=f"/scheduled-runs/{schedule_id}")
+    console.print_json(data=schedule)
+
+
+@schedules_app.command("create")
+def schedules_create(
+    session_id: str = typer.Option(..., "--session-id", help="Session ID"),
+    skill_id: str = typer.Option(..., "--skill-id", help="Skill ID"),
+    params: str = typer.Option("{}", "--params", help="Schedule params as JSON object"),
+    interval_seconds: int = typer.Option(3600, "--interval-seconds", help="Execution interval seconds"),
+    name: str | None = typer.Option(None, "--name", help="Schedule name"),
+    skill_version: int | None = typer.Option(None, "--skill-version", help="Skill version"),
+    start_in_seconds: int = typer.Option(0, "--start-in-seconds", help="Delay first execution"),
+    active: bool = typer.Option(True, "--active/--paused", help="Initial schedule status"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Create a scheduled run."""
+    base = _service_base_url(service_url)
+    params_obj = _parse_json_object(params, "params")
+    created = _service_request(
+        method="POST",
+        base_url=base,
+        path="/scheduled-runs",
+        payload={
+            "name": name,
+            "session_id": session_id,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "params": params_obj,
+            "interval_seconds": interval_seconds,
+            "start_in_seconds": start_in_seconds,
+            "active": active,
+        },
+    )
+    console.print(f"[anton.success]Created schedule {created.get('id')} ({created.get('status')}).[/]")
+    console.print_json(data=created)
+
+
+@schedules_app.command("trigger")
+def schedules_trigger(
+    schedule_id: str = typer.Argument(..., help="Schedule ID"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key", help="Optional idempotency key"),
+    wait: bool = typer.Option(False, "--wait/--no-wait", help="Wait for run completion"),
+    wait_timeout_seconds: float = typer.Option(300.0, "--wait-timeout-seconds", help="Run wait timeout"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Trigger a scheduled run now."""
+    base = _service_base_url(service_url)
+    result = _service_request(
+        method="POST",
+        base_url=base,
+        path=f"/scheduled-runs/{schedule_id}/trigger",
+        payload={
+            "idempotency_key": idempotency_key,
+            "wait_for_completion": wait,
+            "wait_timeout_seconds": wait_timeout_seconds,
+        },
+    )
+    console.print(
+        f"[anton.success]Triggered schedule {schedule_id} run={result.get('run_id')} "
+        f"status={result.get('status')}[/]"
+    )
+    console.print_json(data=result)
+
+
+@schedules_app.command("pause")
+def schedules_pause(
+    schedule_id: str = typer.Argument(..., help="Schedule ID"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Pause a scheduled run."""
+    base = _service_base_url(service_url)
+    updated = _service_request(
+        method="POST",
+        base_url=base,
+        path=f"/scheduled-runs/{schedule_id}/pause",
+    )
+    console.print(f"[anton.success]Paused schedule {schedule_id}.[/]")
+    console.print_json(data=updated)
+
+
+@schedules_app.command("resume")
+def schedules_resume(
+    schedule_id: str = typer.Argument(..., help="Schedule ID"),
+    service_url: str | None = typer.Option(None, "--service-url", help="Anton service base URL"),
+) -> None:
+    """Resume a scheduled run."""
+    base = _service_base_url(service_url)
+    updated = _service_request(
+        method="POST",
+        base_url=base,
+        path=f"/scheduled-runs/{schedule_id}/resume",
+    )
+    console.print(f"[anton.success]Resumed schedule {schedule_id}.[/]")
+    console.print_json(data=updated)
+
+
 @app.command("version")
 def version() -> None:
     """Show Anton version."""
     console.print(f"Anton v{__version__}")
+
+
+app.add_typer(skills_app, name="skills")
+app.add_typer(schedules_app, name="schedules")

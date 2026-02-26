@@ -78,6 +78,11 @@ Key endpoints:
 
 MVP docs and runbook: [`docs/mvp/`](docs/mvp/README.md)
 
+Service features are also available via CLI commands:
+
+- `anton skills list|show|create|version|run`
+- `anton schedules list|show|create|trigger|pause|resume`
+
 Benchmark harness:
 
 ```bash
