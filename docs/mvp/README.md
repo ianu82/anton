@@ -10,6 +10,7 @@ This folder documents the MVP service build that turns Anton into a connector-na
 4. Artifact and run trace endpoints for reproducibility
 5. Benchmark harness (`anton eval-mvp`) with p50/p95 and pass-rate reporting
 6. Versioned skill registry (`/skills`) with parameterized run execution
+7. Scheduled run definitions (`/scheduled-runs`) with trigger/pause/resume controls
 
 ## Key Paths
 

@@ -165,6 +165,45 @@ Request:
 }
 ```
 
+## Scheduled Runs
+
+### `POST /scheduled-runs`
+
+Create a saved schedule definition backed by a skill + params.
+
+```json
+{
+  "name": "daily-kpi",
+  "session_id": "abc123",
+  "skill_id": "skill-1",
+  "skill_version": 2,
+  "params": {"dimension": "cohort", "period": "Q1"},
+  "interval_seconds": 3600,
+  "start_in_seconds": 0,
+  "active": true
+}
+```
+
+### `GET /scheduled-runs`
+
+List schedules (optional `status=active|paused` filter).
+
+### `GET /scheduled-runs/{schedule_id}`
+
+Fetch one schedule.
+
+### `POST /scheduled-runs/{schedule_id}/trigger`
+
+Trigger a schedule immediately and execute its configured skill run.
+
+### `POST /scheduled-runs/{schedule_id}/pause`
+
+Pause a schedule.
+
+### `POST /scheduled-runs/{schedule_id}/resume`
+
+Resume a paused schedule.
+
 ## Metrics
 
 ### `GET /metrics`

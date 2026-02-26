@@ -4,7 +4,7 @@
 
 - `FastAPI` service owns sessions, turns, runs, approvals, and metrics.
 - `ServiceStore` persists state in SQLite (`.anton/service/service.db`) and writes immutable audit lines to `.anton/service/audit.log.jsonl`.
-- `ServiceStore` also persists versioned skills (named prompt templates) for reuse across runs.
+- `ServiceStore` also persists versioned skills (named prompt templates) and scheduled run definitions.
 - `RuntimeManager` controls in-memory session runtimes and enforces per-turn locks.
 
 ## Data Plane
