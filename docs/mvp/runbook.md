@@ -39,6 +39,11 @@ With `anton serve` running, you can use:
 - `anton schedules create --session-id <session_id> --skill-id <skill_id> --params '{"metric":"churn"}' --interval-seconds 3600`
 - `anton schedules trigger <schedule_id>`
 
+In interactive chat (`anton`), slash commands are also available:
+
+- `/skills list|show|create|version|run`
+- `/schedules list|show|create|trigger|pause|resume`
+
 ## Approval Handling
 
 1. Query `GET /approvals` for `pending` items.
