@@ -931,7 +931,9 @@ class ServiceStore:
                 ).fetchone()
                 if skill_row is None:
                     return None
-                resolved_version = int(version or skill_row["latest_version"])
+                resolved_version = int(skill_row["latest_version"]) if version is None else int(version)
+                if resolved_version < 1:
+                    return None
                 version_row = conn.execute(
                     """
                     SELECT version, prompt_template, required_params, created_at
@@ -1056,6 +1058,43 @@ class ServiceStore:
                     + where
                     + "ORDER BY created_at DESC LIMIT ?",
                     params,
+                ).fetchall()
+            finally:
+                conn.close()
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "session_id": row["session_id"],
+                "skill_id": row["skill_id"],
+                "skill_version": row["skill_version"],
+                "params": json.loads(row["params"]),
+                "interval_seconds": int(row["interval_seconds"]),
+                "next_run_at": row["next_run_at"],
+                "status": row["status"],
+                "last_run_id": row["last_run_id"],
+                "last_run_at": row["last_run_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def list_due_schedules(self, *, now_ts: float, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, session_id, skill_id, skill_version, params,
+                           interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                           created_at, updated_at
+                    FROM scheduled_runs
+                    WHERE status = 'active' AND next_run_at <= ?
+                    ORDER BY next_run_at ASC
+                    LIMIT ?
+                    """,
+                    (float(now_ts), max(1, limit)),
                 ).fetchall()
             finally:
                 conn.close()

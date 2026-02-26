@@ -96,6 +96,8 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         wait_for_completion: bool,
         wait_timeout_seconds: float,
     ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+        if version is not None and version < 1:
+            raise HTTPException(status_code=400, detail="Skill version must be >= 1.")
         template = store.get_skill_template(skill_id=skill_id, version=version)
         if template is None:
             raise HTTPException(status_code=404, detail=f"Unknown skill_id/version combination for '{skill_id}'.")
@@ -122,12 +124,7 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
     async def _scheduler_loop() -> None:
         while True:
             now = time.time()
-            due = [
-                schedule
-                for schedule in store.list_schedules(status="active", limit=scheduler_batch_size)
-                if float(schedule["next_run_at"]) <= now
-            ]
-            due.sort(key=lambda item: float(item["next_run_at"]))
+            due = store.list_due_schedules(now_ts=now, limit=scheduler_batch_size)
 
             for schedule in due:
                 schedule_id = schedule["id"]
@@ -362,6 +359,8 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="interval_seconds must be >= 1.")
         if req.start_in_seconds < 0:
             raise HTTPException(status_code=400, detail="start_in_seconds must be >= 0.")
+        if req.skill_version is not None and req.skill_version < 1:
+            raise HTTPException(status_code=400, detail="skill_version must be >= 1.")
         if store.get_session(req.session_id) is None:
             raise HTTPException(status_code=404, detail=f"Unknown session_id '{req.session_id}'.")
         template = store.get_skill_template(skill_id=req.skill_id, version=req.skill_version)

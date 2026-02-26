@@ -105,6 +105,30 @@ class SlowLLM:
         )
 
 
+class SlowerLLM:
+    coding_model = "dummy-coder"
+
+    async def plan_stream(self, **kwargs):
+        await asyncio.sleep(0.5)
+        response = LLMResponse(
+            content="slower result",
+            tool_calls=[],
+            usage=Usage(input_tokens=1, output_tokens=1),
+            stop_reason="end_turn",
+        )
+        yield StreamTextDelta(text="slower result")
+        yield StreamComplete(response=response)
+
+    async def plan(self, **kwargs):
+        await asyncio.sleep(0.5)
+        return LLMResponse(
+            content="slower result",
+            tool_calls=[],
+            usage=Usage(input_tokens=1, output_tokens=1),
+            stop_reason="end_turn",
+        )
+
+
 def _build_settings(workspace: Path) -> AntonSettings:
     settings = AntonSettings()
     settings.resolve_workspace(str(workspace))
@@ -269,3 +293,57 @@ def test_list_session_runs(tmp_path: Path, monkeypatch):
     listed = client.get(f"/sessions/{session_id}/runs").json()["runs"]
     assert len(listed) >= 2
     assert listed[0]["status"] in {"completed", "running", "queued", "approval_required", "cancelled", "failed"}
+
+
+def test_local_mode_wait_false_returns_immediately(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: SlowerLLM())
+    settings = _build_settings(tmp_path)
+    settings.service_worker_mode = "local"
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "local-async")}).json()["session_id"]
+
+        start = time.time()
+        result = client.post(
+            f"/sessions/{session_id}/turn",
+            json={"message": "run async", "wait_for_completion": False},
+        ).json()
+        elapsed = time.time() - start
+
+        assert result["status"] == "running"
+        assert elapsed < 0.3
+
+        deadline = time.time() + 5
+        status = "running"
+        while time.time() < deadline:
+            run = client.get(f"/runs/{result['run_id']}").json()
+            status = run["status"]
+            if status == "completed":
+                break
+            time.sleep(0.1)
+
+        assert status == "completed"
+
+
+def test_duplicate_session_id_conflict_after_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: TextOnlyLLM())
+    settings = _build_settings(tmp_path)
+    fixed_id = "fixed-session-id"
+    workspace = tmp_path / "dup-session"
+
+    app1 = create_app(settings)
+    with TestClient(app1) as client:
+        first = client.post(
+            "/sessions",
+            json={"session_id": fixed_id, "workspace_path": str(workspace)},
+        )
+        assert first.status_code == 200
+
+    app2 = create_app(_build_settings(tmp_path))
+    with TestClient(app2) as client:
+        second = client.post(
+            "/sessions",
+            json={"session_id": fixed_id, "workspace_path": str(workspace)},
+        )
+        assert second.status_code == 409
