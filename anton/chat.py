@@ -45,6 +45,7 @@ from anton.tools import (
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from anton.connectors import ConnectorAuthContext
     from anton.connectors.hub import ConnectorHub
     from anton.config.settings import AntonSettings
     from anton.context.self_awareness import SelfAwarenessContext
@@ -78,6 +79,7 @@ class ChatSession:
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
         connector_hub: ConnectorHub | None = None,
+        connector_auth_context: ConnectorAuthContext | None = None,
         tool_gate: ToolGate | None = None,
         usage_hook: UsageHook | None = None,
         audit_hook: AuditHook | None = None,
@@ -88,6 +90,7 @@ class ChatSession:
         self._workspace = workspace
         self._console = console
         self._connector_hub = connector_hub
+        self._connector_auth_context = connector_auth_context
         self._tool_gate = tool_gate
         self._usage_hook = usage_hook
         self._audit_hook = audit_hook
@@ -110,6 +113,9 @@ class ChatSession:
         self._tool_gate = tool_gate
         self._usage_hook = usage_hook
         self._audit_hook = audit_hook
+
+    def configure_connector_auth_context(self, auth_context: ConnectorAuthContext | None) -> None:
+        self._connector_auth_context = auth_context
 
     def _make_secret_handler(self):
         """Create a closure that prompts the user for secrets via the console."""

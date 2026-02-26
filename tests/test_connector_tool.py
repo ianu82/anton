@@ -9,7 +9,7 @@ import pytest
 
 from anton.chat import ChatSession
 from anton.config.settings import AntonSettings
-from anton.connectors import ConnectorHub
+from anton.connectors import ConnectorAuthContext, ConnectorHub
 from anton.tools import dispatch_tool
 
 
@@ -82,3 +82,41 @@ async def test_connector_list_schema_query(sqlite_db: Path, tmp_path: Path):
     )
     assert "Rows returned" in queried
     assert "10.5" in queried
+
+
+@pytest.mark.asyncio()
+async def test_connector_tool_passes_auth_context():
+    class _HubStub:
+        async def list_connectors(self, *, auth_context=None):
+            return "ok"
+
+        async def schema(self, connector_id, *, auth_context=None):
+            return "ok"
+
+        async def query(self, connector_id, query, *, limit=1000, auth_context=None):
+            assert isinstance(auth_context, ConnectorAuthContext)
+            assert auth_context.user_id == "user-123"
+            assert auth_context.org_id == "org-abc"
+            return "query-ok"
+
+        async def sample(self, connector_id, table, *, limit=100, auth_context=None):
+            return "ok"
+
+        async def write(self, connector_id, query, *, auth_context=None):
+            return "ok"
+
+    session = ChatSession(AsyncMock(), connector_hub=_HubStub())
+    session.configure_connector_auth_context(
+        ConnectorAuthContext(user_id="user-123", org_id="org-abc", roles=["analyst"])
+    )
+
+    result = await dispatch_tool(
+        session,
+        "connector",
+        {
+            "action": "query",
+            "connector_id": "warehouse",
+            "query": "SELECT * FROM sales LIMIT 10",
+        },
+    )
+    assert result == "query-ok"

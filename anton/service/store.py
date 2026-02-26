@@ -104,6 +104,57 @@ class ServiceStore:
 
                     CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts(run_id);
 
+                    CREATE TABLE IF NOT EXISTS skills (
+                      id TEXT PRIMARY KEY,
+                      name TEXT NOT NULL,
+                      description TEXT NOT NULL,
+                      latest_version INTEGER NOT NULL,
+                      created_at REAL NOT NULL,
+                      updated_at REAL NOT NULL,
+                      metadata TEXT NOT NULL
+                    );
+
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+                    CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS skill_versions (
+                      id TEXT PRIMARY KEY,
+                      skill_id TEXT NOT NULL,
+                      version INTEGER NOT NULL,
+                      prompt_template TEXT NOT NULL,
+                      required_params TEXT NOT NULL,
+                      created_at REAL NOT NULL,
+                      FOREIGN KEY(skill_id) REFERENCES skills(id)
+                    );
+
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_versions_skill_version
+                    ON skill_versions(skill_id, version);
+                    CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_id
+                    ON skill_versions(skill_id, created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS scheduled_runs (
+                      id TEXT PRIMARY KEY,
+                      name TEXT NOT NULL,
+                      session_id TEXT NOT NULL,
+                      skill_id TEXT NOT NULL,
+                      skill_version INTEGER,
+                      params TEXT NOT NULL,
+                      interval_seconds INTEGER NOT NULL,
+                      next_run_at REAL NOT NULL,
+                      status TEXT NOT NULL,
+                      last_run_id TEXT,
+                      last_run_at REAL,
+                      created_at REAL NOT NULL,
+                      updated_at REAL NOT NULL,
+                      FOREIGN KEY(session_id) REFERENCES sessions(id),
+                      FOREIGN KEY(skill_id) REFERENCES skills(id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status_next
+                    ON scheduled_runs(status, next_run_at);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_runs_session_id
+                    ON scheduled_runs(session_id, created_at DESC);
+
                     CREATE TABLE IF NOT EXISTS usage_ledger (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
                       session_id TEXT NOT NULL,
@@ -701,6 +752,380 @@ class ServiceStore:
             }
             for row in rows
         ]
+
+    def create_skill(
+        self,
+        *,
+        name: str,
+        description: str,
+        prompt_template: str,
+        required_params: list[str],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        skill_id = uuid.uuid4().hex[:12]
+        version_id = uuid.uuid4().hex[:12]
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO skills(
+                      id, name, description, latest_version, created_at, updated_at, metadata
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        skill_id,
+                        name,
+                        description,
+                        1,
+                        now,
+                        now,
+                        json.dumps(metadata or {}, sort_keys=True),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO skill_versions(
+                      id, skill_id, version, prompt_template, required_params, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version_id,
+                        skill_id,
+                        1,
+                        prompt_template,
+                        json.dumps(sorted(set(required_params))),
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        skill = self.get_skill(skill_id)
+        if skill is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"Skill '{skill_id}' was created but could not be loaded.")
+        return skill
+
+    def add_skill_version(
+        self,
+        *,
+        skill_id: str,
+        prompt_template: str,
+        required_params: list[str],
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        version_id = uuid.uuid4().hex[:12]
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT latest_version FROM skills WHERE id = ?",
+                    (skill_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                next_version = int(row["latest_version"]) + 1
+                conn.execute(
+                    """
+                    INSERT INTO skill_versions(
+                      id, skill_id, version, prompt_template, required_params, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version_id,
+                        skill_id,
+                        next_version,
+                        prompt_template,
+                        json.dumps(sorted(set(required_params))),
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE skills SET latest_version = ?, updated_at = ? WHERE id = ?",
+                    (next_version, now, skill_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_skill(skill_id)
+
+    def list_skills(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, description, latest_version, created_at, updated_at, metadata
+                    FROM skills
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, limit),),
+                ).fetchall()
+            finally:
+                conn.close()
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "description": row["description"],
+                "latest_version": int(row["latest_version"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "metadata": json.loads(row["metadata"]),
+            }
+            for row in rows
+        ]
+
+    def get_skill(self, skill_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                skill_row = conn.execute(
+                    """
+                    SELECT id, name, description, latest_version, created_at, updated_at, metadata
+                    FROM skills
+                    WHERE id = ?
+                    """,
+                    (skill_id,),
+                ).fetchone()
+                if skill_row is None:
+                    return None
+                version_row = conn.execute(
+                    """
+                    SELECT version, prompt_template, required_params, created_at
+                    FROM skill_versions
+                    WHERE skill_id = ? AND version = ?
+                    """,
+                    (skill_id, int(skill_row["latest_version"])),
+                ).fetchone()
+            finally:
+                conn.close()
+        if version_row is None:
+            return None
+        return {
+            "id": skill_row["id"],
+            "name": skill_row["name"],
+            "description": skill_row["description"],
+            "latest_version": int(skill_row["latest_version"]),
+            "created_at": skill_row["created_at"],
+            "updated_at": skill_row["updated_at"],
+            "metadata": json.loads(skill_row["metadata"]),
+            "latest_prompt_template": version_row["prompt_template"],
+            "latest_required_params": json.loads(version_row["required_params"]),
+            "latest_version_created_at": version_row["created_at"],
+        }
+
+    def get_skill_template(self, *, skill_id: str, version: int | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                skill_row = conn.execute(
+                    """
+                    SELECT id, name, description, latest_version
+                    FROM skills
+                    WHERE id = ?
+                    """,
+                    (skill_id,),
+                ).fetchone()
+                if skill_row is None:
+                    return None
+                resolved_version = int(version or skill_row["latest_version"])
+                version_row = conn.execute(
+                    """
+                    SELECT version, prompt_template, required_params, created_at
+                    FROM skill_versions
+                    WHERE skill_id = ? AND version = ?
+                    """,
+                    (skill_id, resolved_version),
+                ).fetchone()
+            finally:
+                conn.close()
+        if version_row is None:
+            return None
+        return {
+            "skill_id": skill_row["id"],
+            "name": skill_row["name"],
+            "description": skill_row["description"],
+            "version": int(version_row["version"]),
+            "prompt_template": version_row["prompt_template"],
+            "required_params": json.loads(version_row["required_params"]),
+            "created_at": version_row["created_at"],
+        }
+
+    def create_schedule(
+        self,
+        *,
+        name: str,
+        session_id: str,
+        skill_id: str,
+        skill_version: int | None,
+        params: dict[str, str],
+        interval_seconds: int,
+        start_at: float,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        schedule_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO scheduled_runs(
+                      id, name, session_id, skill_id, skill_version, params,
+                      interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                      created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        schedule_id,
+                        name,
+                        session_id,
+                        skill_id,
+                        skill_version,
+                        json.dumps(params, sort_keys=True),
+                        int(interval_seconds),
+                        float(start_at),
+                        status,
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        schedule = self.get_schedule(schedule_id)
+        if schedule is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"Schedule '{schedule_id}' was created but could not be loaded.")
+        return schedule
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id, name, session_id, skill_id, skill_version, params,
+                           interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                           created_at, updated_at
+                    FROM scheduled_runs
+                    WHERE id = ?
+                    """,
+                    (schedule_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "session_id": row["session_id"],
+            "skill_id": row["skill_id"],
+            "skill_version": row["skill_version"],
+            "params": json.loads(row["params"]),
+            "interval_seconds": int(row["interval_seconds"]),
+            "next_run_at": row["next_run_at"],
+            "status": row["status"],
+            "last_run_id": row["last_run_id"],
+            "last_run_at": row["last_run_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_schedules(self, *, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        where = ""
+        params: tuple[Any, ...]
+        if status is None:
+            params = (max(1, limit),)
+        else:
+            where = "WHERE status = ? "
+            params = (status, max(1, limit))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, session_id, skill_id, skill_version, params,
+                           interval_seconds, next_run_at, status, last_run_id, last_run_at,
+                           created_at, updated_at
+                    FROM scheduled_runs
+                    """
+                    + where
+                    + "ORDER BY created_at DESC LIMIT ?",
+                    params,
+                ).fetchall()
+            finally:
+                conn.close()
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "session_id": row["session_id"],
+                "skill_id": row["skill_id"],
+                "skill_version": row["skill_version"],
+                "params": json.loads(row["params"]),
+                "interval_seconds": int(row["interval_seconds"]),
+                "next_run_at": row["next_run_at"],
+                "status": row["status"],
+                "last_run_id": row["last_run_id"],
+                "last_run_at": row["last_run_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def record_schedule_trigger(self, *, schedule_id: str, run_id: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT interval_seconds
+                    FROM scheduled_runs
+                    WHERE id = ?
+                    """,
+                    (schedule_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                next_run = now + int(row["interval_seconds"])
+                conn.execute(
+                    """
+                    UPDATE scheduled_runs
+                    SET last_run_id = ?, last_run_at = ?, next_run_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (run_id, now, next_run, now, schedule_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_schedule(schedule_id)
+
+    def set_schedule_status(self, *, schedule_id: str, status: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE scheduled_runs
+                    SET status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, now, schedule_id),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    return None
+            finally:
+                conn.close()
+        return self.get_schedule(schedule_id)
 
     def append_usage(
         self,

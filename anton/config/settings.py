@@ -35,6 +35,8 @@ class AntonSettings(BaseSettings):
 
     memory_enabled: bool = True
     memory_dir: str = ".anton"
+    memory_recall_max_items: int = 4
+    memory_recall_max_chars: int = 4000
 
     context_dir: str = ".anton/context"
 
@@ -55,11 +57,15 @@ class AntonSettings(BaseSettings):
     max_tool_calls_per_run: int = 60
     max_estimated_seconds_without_approval: int = 90
     connector_max_query_limit: int = 10_000
+    connector_require_where_or_limit: bool = True
 
     # Service runtime mode
     service_worker_mode: str = "local"
     service_queue_worker_count: int = 2
     service_default_wait_timeout_seconds: int = 300
+    service_scheduler_enabled: bool = False
+    service_scheduler_poll_seconds: float = 5.0
+    service_scheduler_batch_size: int = 20
 
     _workspace: Path = PrivateAttr(default=None)
 

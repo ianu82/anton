@@ -17,6 +17,14 @@ class ConnectorInfo:
 
 
 @dataclass(slots=True)
+class ConnectorAuthContext:
+    user_id: str = ""
+    org_id: str = ""
+    roles: list[str] | None = None
+    attributes: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
 class ConnectorSchema:
     connector_id: str
     tables: dict[str, list[str]]
@@ -37,11 +45,16 @@ class ConnectorClient(ABC):
     """Interface for connector backends used by Anton."""
 
     @abstractmethod
-    async def list_connectors(self) -> list[ConnectorInfo]:
+    async def list_connectors(self, *, auth_context: ConnectorAuthContext | None = None) -> list[ConnectorInfo]:
         raise NotImplementedError
 
     @abstractmethod
-    async def describe_schema(self, connector_id: str) -> ConnectorSchema:
+    async def describe_schema(
+        self,
+        connector_id: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
+    ) -> ConnectorSchema:
         raise NotImplementedError
 
     @abstractmethod
@@ -51,6 +64,7 @@ class ConnectorClient(ABC):
         query: str,
         *,
         limit: int = 1000,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         raise NotImplementedError
 
@@ -61,6 +75,7 @@ class ConnectorClient(ABC):
         table: str,
         *,
         limit: int = 100,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         raise NotImplementedError
 
@@ -69,5 +84,7 @@ class ConnectorClient(ABC):
         self,
         connector_id: str,
         query: str,
+        *,
+        auth_context: ConnectorAuthContext | None = None,
     ) -> QueryResult:
         raise NotImplementedError
