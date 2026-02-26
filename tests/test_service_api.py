@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -75,6 +77,30 @@ class ApprovalLLM:
             content="waiting for approval",
             tool_calls=[],
             usage=Usage(input_tokens=2, output_tokens=3),
+            stop_reason="end_turn",
+        )
+
+
+class SlowLLM:
+    coding_model = "dummy-coder"
+
+    async def plan_stream(self, **kwargs):
+        await asyncio.sleep(0.2)
+        response = LLMResponse(
+            content="slow result",
+            tool_calls=[],
+            usage=Usage(input_tokens=1, output_tokens=1),
+            stop_reason="end_turn",
+        )
+        yield StreamTextDelta(text="slow result")
+        yield StreamComplete(response=response)
+
+    async def plan(self, **kwargs):
+        await asyncio.sleep(0.2)
+        return LLMResponse(
+            content="slow result",
+            tool_calls=[],
+            usage=Usage(input_tokens=1, output_tokens=1),
             stop_reason="end_turn",
         )
 
@@ -174,3 +200,72 @@ def test_session_event_isolation(tmp_path: Path, monkeypatch):
     assert r2["run_id"] in run_ids_2
     assert r2["run_id"] not in run_ids_1
     assert r1["run_id"] not in run_ids_2
+
+
+def test_idempotency_key_reuses_run(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: TextOnlyLLM())
+    app = create_app(_build_settings(tmp_path))
+    client = TestClient(app)
+
+    session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "idem")}).json()["session_id"]
+    req = {
+        "message": "hello idempotent",
+        "idempotency_key": "key-123",
+    }
+
+    first = client.post(f"/sessions/{session_id}/turn", json=req).json()
+    second = client.post(f"/sessions/{session_id}/turn", json=req).json()
+
+    assert first["run_id"] == second["run_id"]
+    assert second["reused"] is True
+    assert second["status"] == "completed"
+
+
+def test_queue_mode_and_cancel(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: SlowLLM())
+    settings = _build_settings(tmp_path)
+    settings.service_worker_mode = "queue"
+    settings.service_queue_worker_count = 1
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "queue-cancel")}).json()["session_id"]
+
+        queued = client.post(
+            f"/sessions/{session_id}/turn",
+            json={
+                "message": "slow work",
+                "wait_for_completion": False,
+                "idempotency_key": "queue-cancel-1",
+            },
+        ).json()
+        run_id = queued["run_id"]
+        assert queued["status"] == "queued"
+
+        cancel = client.post(f"/runs/{run_id}/cancel").json()
+        assert cancel["cancel_requested"] is True
+
+        deadline = time.time() + 5
+        status = "running"
+        while time.time() < deadline:
+            run = client.get(f"/runs/{run_id}").json()
+            status = run["status"]
+            if status == "cancelled":
+                break
+            time.sleep(0.1)
+
+        assert status == "cancelled"
+
+
+def test_list_session_runs(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("anton.service.runtime.LLMClient.from_settings", lambda _: TextOnlyLLM())
+    app = create_app(_build_settings(tmp_path))
+    client = TestClient(app)
+
+    session_id = client.post("/sessions", json={"workspace_path": str(tmp_path / "runs-list")}).json()["session_id"]
+    client.post(f"/sessions/{session_id}/turn", json={"message": "one"})
+    client.post(f"/sessions/{session_id}/turn", json={"message": "two"})
+
+    listed = client.get(f"/sessions/{session_id}/runs").json()["runs"]
+    assert len(listed) >= 2
+    assert listed[0]["status"] in {"completed", "running", "queued", "approval_required", "cancelled", "failed"}

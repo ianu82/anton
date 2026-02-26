@@ -34,17 +34,26 @@ Request:
 
 ```json
 {
-  "message": "show churn by cohort"
+  "message": "show churn by cohort",
+  "idempotency_key": "optional-client-key",
+  "wait_for_completion": true,
+  "wait_timeout_seconds": 300
 }
 ```
 
 Response fields:
 
 - `run_id`
-- `status` (`completed` | `approval_required` | `failed`)
+- `status` (`queued` | `running` | `completed` | `approval_required` | `cancelled` | `failed`)
 - `reply`
 - `error`
 - `pending_approval_ids`
+
+If `idempotency_key` is repeated for the same session, the existing run is returned instead of creating a duplicate.
+
+### `GET /sessions/{session_id}/runs`
+
+List recent runs for a session.
 - `total_tokens`
 - `tool_calls`
 
@@ -62,6 +71,10 @@ Query params:
 ### `GET /runs/{run_id}`
 
 Returns run summary and final status.
+
+### `POST /runs/{run_id}/cancel`
+
+Requests cancellation for an in-flight run (best effort).
 
 ### `GET /runs/{run_id}/artifacts`
 

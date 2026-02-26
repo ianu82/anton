@@ -58,6 +58,8 @@ class AntonSettings(BaseSettings):
 
     # Service runtime mode
     service_worker_mode: str = "local"
+    service_queue_worker_count: int = 2
+    service_default_wait_timeout_seconds: int = 300
 
     _workspace: Path = PrivateAttr(default=None)
 

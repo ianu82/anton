@@ -49,8 +49,18 @@ class ServiceStore:
                       error TEXT,
                       input_tokens INTEGER NOT NULL DEFAULT 0,
                       output_tokens INTEGER NOT NULL DEFAULT 0,
+                      cancel_requested INTEGER NOT NULL DEFAULT 0,
+                      worker_mode TEXT NOT NULL DEFAULT 'local',
                       pending_approval_ids TEXT NOT NULL DEFAULT '[]',
                       FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS run_idempotency (
+                      session_id TEXT NOT NULL,
+                      idempotency_key TEXT NOT NULL,
+                      run_id TEXT NOT NULL,
+                      created_at REAL NOT NULL,
+                      PRIMARY KEY(session_id, idempotency_key)
                     );
 
                     CREATE TABLE IF NOT EXISTS run_events (
@@ -64,6 +74,8 @@ class ServiceStore:
 
                     CREATE INDEX IF NOT EXISTS idx_run_events_session_id_id ON run_events(session_id, id);
                     CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id);
+                    CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, created_at DESC);
 
                     CREATE TABLE IF NOT EXISTS approvals (
                       id TEXT PRIMARY KEY,
@@ -105,9 +117,20 @@ class ServiceStore:
                     CREATE INDEX IF NOT EXISTS idx_usage_run_id ON usage_ledger(run_id);
                     """
                 )
+                self._ensure_runs_columns(conn)
                 conn.commit()
             finally:
                 conn.close()
+
+    @staticmethod
+    def _ensure_runs_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(runs)").fetchall()
+        existing = {str(row[1]) for row in rows}
+
+        if "cancel_requested" not in existing:
+            conn.execute("ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+        if "worker_mode" not in existing:
+            conn.execute("ALTER TABLE runs ADD COLUMN worker_mode TEXT NOT NULL DEFAULT 'local'")
 
     def create_session(
         self,
@@ -157,7 +180,14 @@ class ServiceStore:
             "metadata": json.loads(row["metadata"]),
         }
 
-    def create_run(self, *, run_id: str, session_id: str, prompt: str) -> dict[str, Any]:
+    def create_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        prompt: str,
+        worker_mode: str = "local",
+    ) -> dict[str, Any]:
         now = time.time()
         with self._lock:
             conn = self._connect()
@@ -166,10 +196,10 @@ class ServiceStore:
                     """
                     INSERT INTO runs(
                       id, session_id, created_at, started_at, status, prompt,
-                      pending_approval_ids
-                    ) VALUES(?, ?, ?, ?, ?, ?, '[]')
+                      worker_mode, pending_approval_ids
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, '[]')
                     """,
-                    (run_id, session_id, now, now, "running", prompt),
+                    (run_id, session_id, now, now, "running", prompt, worker_mode),
                 )
                 conn.commit()
             finally:
@@ -182,7 +212,65 @@ class ServiceStore:
             "started_at": now,
             "status": "running",
             "prompt": prompt,
+            "worker_mode": worker_mode,
         }
+
+    def reserve_idempotency_key(
+        self,
+        *,
+        session_id: str,
+        idempotency_key: str,
+        run_id: str,
+    ) -> str:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO run_idempotency(session_id, idempotency_key, run_id, created_at)
+                        VALUES(?, ?, ?, ?)
+                        """,
+                        (session_id, idempotency_key, run_id, now),
+                    )
+                    conn.commit()
+                    return run_id
+                except sqlite3.IntegrityError:
+                    row = conn.execute(
+                        """
+                        SELECT run_id FROM run_idempotency
+                        WHERE session_id = ? AND idempotency_key = ?
+                        """,
+                        (session_id, idempotency_key),
+                    ).fetchone()
+                    if row is None:
+                        raise
+                    return str(row["run_id"])
+            finally:
+                conn.close()
+
+    def run_id_for_idempotency_key(
+        self,
+        *,
+        session_id: str,
+        idempotency_key: str,
+    ) -> str | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT run_id FROM run_idempotency
+                    WHERE session_id = ? AND idempotency_key = ?
+                    """,
+                    (session_id, idempotency_key),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        return str(row["run_id"])
 
     def complete_run(
         self,
@@ -221,6 +309,18 @@ class ServiceStore:
             finally:
                 conn.close()
 
+    def set_run_status(self, *, run_id: str, status: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE runs SET status = ? WHERE id = ?",
+                    (status, run_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             conn = self._connect()
@@ -246,8 +346,76 @@ class ServiceStore:
             "error": row["error"],
             "input_tokens": row["input_tokens"],
             "output_tokens": row["output_tokens"],
+            "cancel_requested": bool(row["cancel_requested"]),
+            "worker_mode": row["worker_mode"],
             "pending_approval_ids": json.loads(row["pending_approval_ids"]),
         }
+
+    def request_run_cancel(self, run_id: str) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE runs
+                    SET cancel_requested = 1
+                    WHERE id = ? AND completed_at IS NULL
+                    """,
+                    (run_id,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def is_run_cancel_requested(self, run_id: str) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT cancel_requested FROM runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        if row is None:
+            return False
+        return bool(row["cancel_requested"])
+
+    def list_runs(self, *, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, created_at, completed_at, status, prompt, error,
+                           input_tokens, output_tokens, cancel_requested, worker_mode
+                    FROM runs
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (session_id, max(1, limit)),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "completed_at": row["completed_at"],
+                "status": row["status"],
+                "prompt": row["prompt"],
+                "error": row["error"],
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cancel_requested": bool(row["cancel_requested"]),
+                "worker_mode": row["worker_mode"],
+            }
+            for row in rows
+        ]
 
     def append_event(
         self,
@@ -568,8 +736,11 @@ class ServiceStore:
         with self._lock:
             conn = self._connect()
             try:
-                run_rows = conn.execute(
+                completed_rows = conn.execute(
                     "SELECT status, started_at, completed_at FROM runs WHERE completed_at IS NOT NULL"
+                ).fetchall()
+                status_counts = conn.execute(
+                    "SELECT status, COUNT(*) AS count FROM runs GROUP BY status"
                 ).fetchall()
             finally:
                 conn.close()
@@ -578,13 +749,16 @@ class ServiceStore:
         successes = 0
         failures = 0
         approvals = 0
+        cancelled = 0
 
-        for row in run_rows:
+        for row in completed_rows:
             status = row["status"]
             if status == "completed":
                 successes += 1
             elif status == "approval_required":
                 approvals += 1
+            elif status == "cancelled":
+                cancelled += 1
             else:
                 failures += 1
             latency = float(row["completed_at"] - row["started_at"])
@@ -599,12 +773,18 @@ class ServiceStore:
             idx = int((len(values) - 1) * p)
             return values[idx]
 
+        by_status = {str(row["status"]): int(row["count"]) for row in status_counts}
+
         return {
-            "run_count": len(run_rows),
+            "run_count": sum(by_status.values()),
             "completed": successes,
             "failed": failures,
             "approval_required": approvals,
+            "cancelled": cancelled,
+            "running": by_status.get("running", 0),
+            "queued": by_status.get("queued", 0),
+            "status_counts": by_status,
             "latency_p50": pct(latencies, 0.5),
             "latency_p95": pct(latencies, 0.95),
-            "success_rate": (successes / len(run_rows)) if run_rows else 0.0,
+            "success_rate": (successes / len(completed_rows)) if completed_rows else 0.0,
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,9 @@ class SessionCreateRequest(BaseModel):
 
 class TurnRequest(BaseModel):
     message: str
+    idempotency_key: str | None = None
+    wait_for_completion: bool = True
+    wait_timeout_seconds: float = 300.0
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -37,7 +41,15 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
     )
     runtime = RuntimeManager(resolved_settings, store)
 
-    app = FastAPI(title="Anton MVP Service", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await runtime.start()
+        try:
+            yield
+        finally:
+            await runtime.close()
+
+    app = FastAPI(title="Anton MVP Service", version="0.1.0", lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.store = store
     app.state.runtime = runtime
@@ -60,9 +72,24 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
     @app.post("/sessions/{session_id}/turn")
     async def run_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
         try:
-            return await runtime.run_turn(session_id=session_id, message=req.message)
+            return await runtime.run_turn(
+                session_id=session_id,
+                message=req.message,
+                idempotency_key=req.idempotency_key,
+                wait_for_completion=req.wait_for_completion,
+                wait_timeout_seconds=req.wait_timeout_seconds,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/sessions/{session_id}/runs")
+    async def list_runs(session_id: str, limit: int = 100) -> dict[str, Any]:
+        if store.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail=f"Unknown session_id '{session_id}'.")
+        return {
+            "session_id": session_id,
+            "runs": store.list_runs(session_id=session_id, limit=limit),
+        }
 
     @app.get("/sessions/{session_id}/events")
     async def list_events(session_id: str, since_id: int = 0, limit: int = 500) -> dict[str, Any]:
@@ -79,6 +106,13 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail=f"Unknown run_id '{run_id}'.")
         return run
+
+    @app.post("/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str) -> dict[str, Any]:
+        try:
+            return await runtime.cancel_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/runs/{run_id}/artifacts")
     async def list_artifacts(run_id: str) -> dict[str, Any]:
