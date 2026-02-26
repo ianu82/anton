@@ -35,6 +35,8 @@ class AntonSettings(BaseSettings):
 
     memory_enabled: bool = True
     memory_dir: str = ".anton"
+    memory_recall_max_items: int = 4
+    memory_recall_max_chars: int = 4000
 
     context_dir: str = ".anton/context"
 

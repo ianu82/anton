@@ -74,6 +74,12 @@ Query params:
 - `since_id` (default `0`)
 - `limit` (default `500`)
 
+Notable event types:
+
+- `memory_retrieval`: emitted at run start with payload:
+  - `retrieved_count`
+  - `provenance` (`session_summary`/`learning` identifiers)
+
 ## Run and Artifacts
 
 ### `GET /runs/{run_id}`

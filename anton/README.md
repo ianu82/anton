@@ -13,6 +13,7 @@ anton/
 ├── service/
 │   ├── app.py             # FastAPI app and endpoint wiring
 │   ├── runtime.py         # Session runtime manager + run governance hooks
+│   ├── memory.py          # Retrieved memory context builder for service turns
 │   ├── store.py           # SQLite persistence + audit events
 │   └── eval.py            # Benchmark/evaluation harness
 ├── llm/
