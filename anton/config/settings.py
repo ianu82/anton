@@ -55,6 +55,7 @@ class AntonSettings(BaseSettings):
     max_tool_calls_per_run: int = 60
     max_estimated_seconds_without_approval: int = 90
     connector_max_query_limit: int = 10_000
+    connector_require_where_or_limit: bool = True
 
     # Service runtime mode
     service_worker_mode: str = "local"

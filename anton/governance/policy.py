@@ -17,6 +17,10 @@ class PolicyConfig:
     require_approval_for_connector_writes: bool = True
     max_estimated_seconds_without_approval: int = 90
     connector_max_query_limit: int = 10_000
+    connector_require_where_or_limit: bool = True
+    connector_blocked_sql_fragments: set[str] = field(
+        default_factory=lambda: {"drop table", "truncate table", "alter table"}
+    )
 
 
 class PolicyEngine:
@@ -63,6 +67,15 @@ class PolicyEngine:
 
     def _evaluate_connector(self, tool_input: dict) -> PolicyDecision:
         action = str(tool_input.get("action", "")).lower()
+        query = str(tool_input.get("query", "")).strip().lower()
+
+        if query:
+            for fragment in self._config.connector_blocked_sql_fragments:
+                if fragment in query:
+                    return PolicyDecision(
+                        allow=False,
+                        reason=f"Query contains blocked SQL fragment: {fragment}",
+                    )
 
         if action == "query":
             limit = tool_input.get("limit", 1000)
@@ -77,6 +90,19 @@ class PolicyEngine:
                         f"Query limit {parsed_limit} exceeds policy max "
                         f"{self._config.connector_max_query_limit}."
                     ),
+                )
+            if (
+                self._config.connector_require_where_or_limit
+                and query.startswith("select")
+                and " where " not in query
+                and " limit " not in query
+            ):
+                return PolicyDecision(
+                    allow=False,
+                    reason=(
+                        "Unbounded SELECT requires approval (missing WHERE/LIMIT)."
+                    ),
+                    requires_approval=True,
                 )
 
         if action == "write":

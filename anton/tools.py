@@ -323,33 +323,48 @@ async def handle_connector(session: ChatSession, tc_input: dict) -> str:
         parsed_limit = 1000
 
     try:
+        auth_context = session._connector_auth_context
         if action == "list":
-            return await session._connector_hub.list_connectors()
+            return await session._connector_hub.list_connectors(auth_context=auth_context)
         if action == "schema":
             if not connector_id:
                 return "connector_id is required for schema action."
-            return await session._connector_hub.schema(connector_id)
+            return await session._connector_hub.schema(connector_id, auth_context=auth_context)
         if action == "query":
             if not connector_id:
                 return "connector_id is required for query action."
             query = str(tc_input.get("query", "")).strip()
             if not query:
                 return "query is required for query action."
-            return await session._connector_hub.query(connector_id, query, limit=max(1, parsed_limit))
+            return await session._connector_hub.query(
+                connector_id,
+                query,
+                limit=max(1, parsed_limit),
+                auth_context=auth_context,
+            )
         if action == "sample":
             if not connector_id:
                 return "connector_id is required for sample action."
             table = str(tc_input.get("table", "")).strip()
             if not table:
                 return "table is required for sample action."
-            return await session._connector_hub.sample(connector_id, table, limit=max(1, parsed_limit))
+            return await session._connector_hub.sample(
+                connector_id,
+                table,
+                limit=max(1, parsed_limit),
+                auth_context=auth_context,
+            )
         if action == "write":
             if not connector_id:
                 return "connector_id is required for write action."
             query = str(tc_input.get("query", "")).strip()
             if not query:
                 return "query is required for write action."
-            return await session._connector_hub.write(connector_id, query)
+            return await session._connector_hub.write(
+                connector_id,
+                query,
+                auth_context=auth_context,
+            )
         return f"Unknown connector action: {action}"
     except ConnectorError as exc:
         return f"Connector action failed: {exc}"
