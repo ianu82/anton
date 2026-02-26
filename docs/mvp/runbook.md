@@ -28,6 +28,17 @@ anton serve --host 127.0.0.1 --port 8000
 6. `POST /skills` + `POST /skills/{skill_id}/run` (optional reusable workflow check)
 7. `POST /scheduled-runs` + `POST /scheduled-runs/{id}/trigger` (optional scheduling check)
 
+## CLI Equivalents
+
+With `anton serve` running, you can use:
+
+- `anton skills list`
+- `anton skills create <name> "<prompt_template>"`
+- `anton skills run <skill_id> --session-id <session_id> --params '{"metric":"churn"}'`
+- `anton schedules list`
+- `anton schedules create --session-id <session_id> --skill-id <skill_id> --params '{"metric":"churn"}' --interval-seconds 3600`
+- `anton schedules trigger <schedule_id>`
+
 ## Approval Handling
 
 1. Query `GET /approvals` for `pending` items.
