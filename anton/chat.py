@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
+import shlex
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -859,6 +864,449 @@ def _human_size(nbytes: int) -> str:
     return f"{nbytes:.1f}TB"
 
 
+def _chat_service_base_url() -> str:
+    return os.environ.get("ANTON_SERVICE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def _chat_parse_json_object(raw: str, label: str) -> dict[str, str]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for {label}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{label} must be a JSON object.")
+    return {str(key): str(value) for key, value in parsed.items()}
+
+
+def _split_positional_and_options(
+    args: list[str],
+    *,
+    value_options: set[str],
+    flag_options: set[str],
+) -> tuple[list[str], dict[str, str | bool]]:
+    positionals: list[str] = []
+    options: dict[str, str | bool] = {}
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token in flag_options:
+            options[token] = True
+            idx += 1
+            continue
+        if token in value_options:
+            if idx + 1 >= len(args):
+                raise ValueError(f"Missing value for {token}")
+            options[token] = args[idx + 1]
+            idx += 2
+            continue
+        if token.startswith("--"):
+            raise ValueError(f"Unknown option: {token}")
+        positionals.append(token)
+        idx += 1
+    return positionals, options
+
+
+def _chat_service_request(
+    *,
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    query: dict[str, str | int | None] | None = None,
+) -> dict:
+    base_url = _chat_service_base_url()
+    query_params = query or {}
+    compact_query = {k: v for k, v in query_params.items() if v is not None}
+    query_str = urllib.parse.urlencode(compact_query, doseq=True)
+    url = f"{base_url}{path}"
+    if query_str:
+        url = f"{url}?{query_str}"
+
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url=url, data=data, headers=headers, method=method.upper())
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.reason
+        body = exc.read().decode("utf-8")
+        if body:
+            try:
+                parsed = json.loads(body)
+                detail = parsed.get("detail", detail)
+            except json.JSONDecodeError:
+                detail = body
+        raise RuntimeError(f"Service request failed ({exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Could not reach service at {_chat_service_base_url()}: {exc.reason}"
+        ) from exc
+
+
+def _print_skills_table(console: Console, skills: list[dict]) -> None:
+    from rich.table import Table
+
+    table = Table(title="Skills")
+    table.add_column("ID", style="anton.cyan")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Description")
+    for skill in skills:
+        table.add_row(
+            str(skill.get("id", "")),
+            str(skill.get("name", "")),
+            str(skill.get("latest_version", "")),
+            str(skill.get("description", "")),
+        )
+    console.print(table)
+
+
+def _print_schedules_table(console: Console, schedules: list[dict]) -> None:
+    from rich.table import Table
+
+    table = Table(title="Scheduled Runs")
+    table.add_column("ID", style="anton.cyan")
+    table.add_column("Name")
+    table.add_column("Session")
+    table.add_column("Skill")
+    table.add_column("Status")
+    table.add_column("Every(s)")
+    table.add_column("Next Run")
+    for item in schedules:
+        table.add_row(
+            str(item.get("id", "")),
+            str(item.get("name", "")),
+            str(item.get("session_id", "")),
+            str(item.get("skill_id", "")),
+            str(item.get("status", "")),
+            str(item.get("interval_seconds", "")),
+            str(item.get("next_run_at", "")),
+        )
+    console.print(table)
+
+
+def _print_skills_usage(console: Console) -> None:
+    console.print(
+        "[anton.muted]Usage: /skills list | show <id> | create <name> \"<template>\" "
+        "[--description \"...\"] [--metadata '{...}'] | "
+        "version <id> \"<template>\" | "
+        "run <id> --session-id <session> [--params '{...}'] "
+        "[--version N] [--wait|--no-wait][/]"
+    )
+
+
+def _print_schedules_usage(console: Console) -> None:
+    console.print(
+        "[anton.muted]Usage: /schedules list [--status active|paused] | show <id> | "
+        "create --session-id <id> --skill-id <id> [--params '{...}'] "
+        "[--interval-seconds N] [--name \"...\"] [--skill-version N] "
+        "[--start-in-seconds N] [--active|--paused] | "
+        "trigger <id> [--wait|--no-wait] | pause <id> | resume <id>[/]"
+    )
+
+
+async def _handle_skills_slash_command(console: Console, text: str) -> bool:
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        console.print(f"[anton.warning]Invalid command syntax: {exc}[/]")
+        _print_skills_usage(console)
+        return True
+
+    subcommand = tokens[1].lower() if len(tokens) > 1 else "list"
+    args = tokens[2:]
+    try:
+        if subcommand == "list":
+            positionals, options = _split_positional_and_options(
+                args,
+                value_options={"--limit"},
+                flag_options=set(),
+            )
+            if positionals:
+                raise ValueError("Unexpected positional arguments for list.")
+            limit = int(str(options.get("--limit", "200")))
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="GET",
+                path="/skills",
+                query={"limit": limit},
+            )
+            skills = response.get("skills", [])
+            if not skills:
+                console.print("[dim]No skills found.[/]")
+            else:
+                _print_skills_table(console, skills)
+            return True
+
+        if subcommand == "show":
+            if len(args) != 1:
+                raise ValueError("show requires a skill id.")
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="GET",
+                path=f"/skills/{args[0]}",
+            )
+            console.print_json(data=response)
+            return True
+
+        if subcommand == "create":
+            positionals, options = _split_positional_and_options(
+                args,
+                value_options={"--description", "--metadata"},
+                flag_options=set(),
+            )
+            if len(positionals) < 2:
+                raise ValueError("create requires name and prompt template.")
+            metadata = _chat_parse_json_object(str(options.get("--metadata", "{}")), "metadata")
+            payload = {
+                "name": positionals[0],
+                "prompt_template": positionals[1],
+                "description": str(options.get("--description", "")),
+                "metadata": metadata,
+            }
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path="/skills",
+                payload=payload,
+            )
+            console.print(f"[anton.success]Created skill {response.get('id')}.[/]")
+            console.print_json(data=response)
+            return True
+
+        if subcommand == "version":
+            if len(args) < 2:
+                raise ValueError("version requires skill id and prompt template.")
+            skill_id = args[0]
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path=f"/skills/{skill_id}/versions",
+                payload={"prompt_template": args[1]},
+            )
+            console.print(f"[anton.success]Updated skill {skill_id}.[/]")
+            console.print_json(data=response)
+            return True
+
+        if subcommand == "run":
+            if not args:
+                raise ValueError("run requires a skill id.")
+            skill_id = args[0]
+            positionals, options = _split_positional_and_options(
+                args[1:],
+                value_options={
+                    "--session-id",
+                    "--params",
+                    "--version",
+                    "--idempotency-key",
+                    "--wait-timeout-seconds",
+                },
+                flag_options={"--wait", "--no-wait"},
+            )
+            if positionals:
+                raise ValueError("Unexpected positional arguments for run.")
+            session_id = str(options.get("--session-id", ""))
+            if not session_id:
+                raise ValueError("run requires --session-id.")
+            params = _chat_parse_json_object(str(options.get("--params", "{}")), "params")
+            wait = True
+            if "--no-wait" in options:
+                wait = False
+            elif "--wait" in options:
+                wait = True
+            payload: dict[str, object] = {
+                "session_id": session_id,
+                "params": params,
+                "wait_for_completion": wait,
+                "wait_timeout_seconds": float(str(options.get("--wait-timeout-seconds", "300.0"))),
+            }
+            if "--version" in options:
+                payload["version"] = int(str(options["--version"]))
+            if "--idempotency-key" in options:
+                payload["idempotency_key"] = str(options["--idempotency-key"])
+
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path=f"/skills/{skill_id}/run",
+                payload=payload,
+            )
+            console.print(
+                f"[anton.success]Skill run {response.get('run_id')} status={response.get('status')}[/]"
+            )
+            reply = str(response.get("reply", "") or "")
+            if reply:
+                console.print(f"\n[bold]Reply:[/]\n{reply}")
+            console.print_json(data=response)
+            return True
+
+        raise ValueError(f"Unknown skills subcommand: {subcommand}")
+    except ValueError as exc:
+        console.print(f"[anton.warning]{exc}[/]")
+        _print_skills_usage(console)
+        return True
+    except RuntimeError as exc:
+        console.print(f"[anton.warning]{exc}[/]")
+        console.print("[anton.muted]Start service with: anton serve[/]")
+        return True
+
+
+async def _handle_schedules_slash_command(console: Console, text: str) -> bool:
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        console.print(f"[anton.warning]Invalid command syntax: {exc}[/]")
+        _print_schedules_usage(console)
+        return True
+
+    subcommand = tokens[1].lower() if len(tokens) > 1 else "list"
+    args = tokens[2:]
+    try:
+        if subcommand == "list":
+            positionals, options = _split_positional_and_options(
+                args,
+                value_options={"--status", "--limit"},
+                flag_options=set(),
+            )
+            if positionals:
+                raise ValueError("Unexpected positional arguments for list.")
+            status = options.get("--status")
+            limit = int(str(options.get("--limit", "200")))
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="GET",
+                path="/scheduled-runs",
+                query={"status": str(status) if status is not None else None, "limit": limit},
+            )
+            schedules = response.get("scheduled_runs", [])
+            if not schedules:
+                console.print("[dim]No schedules found.[/]")
+            else:
+                _print_schedules_table(console, schedules)
+            return True
+
+        if subcommand == "show":
+            if len(args) != 1:
+                raise ValueError("show requires a schedule id.")
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="GET",
+                path=f"/scheduled-runs/{args[0]}",
+            )
+            console.print_json(data=response)
+            return True
+
+        if subcommand == "create":
+            positionals, options = _split_positional_and_options(
+                args,
+                value_options={
+                    "--session-id",
+                    "--skill-id",
+                    "--params",
+                    "--interval-seconds",
+                    "--name",
+                    "--skill-version",
+                    "--start-in-seconds",
+                },
+                flag_options={"--active", "--paused"},
+            )
+            if positionals:
+                raise ValueError("Unexpected positional arguments for create.")
+            session_id = str(options.get("--session-id", ""))
+            skill_id = str(options.get("--skill-id", ""))
+            if not session_id or not skill_id:
+                raise ValueError("create requires --session-id and --skill-id.")
+            params = _chat_parse_json_object(str(options.get("--params", "{}")), "params")
+            active = False if "--paused" in options else True
+            if "--active" in options:
+                active = True
+            payload: dict[str, object] = {
+                "session_id": session_id,
+                "skill_id": skill_id,
+                "params": params,
+                "interval_seconds": int(str(options.get("--interval-seconds", "3600"))),
+                "start_in_seconds": int(str(options.get("--start-in-seconds", "0"))),
+                "active": active,
+            }
+            if "--name" in options:
+                payload["name"] = str(options["--name"])
+            if "--skill-version" in options:
+                payload["skill_version"] = int(str(options["--skill-version"]))
+
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path="/scheduled-runs",
+                payload=payload,
+            )
+            console.print(f"[anton.success]Created schedule {response.get('id')}.[/]")
+            console.print_json(data=response)
+            return True
+
+        if subcommand == "trigger":
+            if not args:
+                raise ValueError("trigger requires a schedule id.")
+            schedule_id = args[0]
+            positionals, options = _split_positional_and_options(
+                args[1:],
+                value_options={"--idempotency-key", "--wait-timeout-seconds"},
+                flag_options={"--wait", "--no-wait"},
+            )
+            if positionals:
+                raise ValueError("Unexpected positional arguments for trigger.")
+            wait = False
+            if "--wait" in options:
+                wait = True
+            elif "--no-wait" in options:
+                wait = False
+
+            payload: dict[str, object] = {
+                "wait_for_completion": wait,
+                "wait_timeout_seconds": float(str(options.get("--wait-timeout-seconds", "300.0"))),
+            }
+            if "--idempotency-key" in options:
+                payload["idempotency_key"] = str(options["--idempotency-key"])
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path=f"/scheduled-runs/{schedule_id}/trigger",
+                payload=payload,
+            )
+            console.print(
+                f"[anton.success]Triggered schedule {schedule_id}: "
+                f"run={response.get('run_id')} status={response.get('status')}[/]"
+            )
+            console.print_json(data=response)
+            return True
+
+        if subcommand in {"pause", "resume"}:
+            if len(args) != 1:
+                raise ValueError(f"{subcommand} requires a schedule id.")
+            schedule_id = args[0]
+            response = await asyncio.to_thread(
+                _chat_service_request,
+                method="POST",
+                path=f"/scheduled-runs/{schedule_id}/{subcommand}",
+            )
+            console.print(f"[anton.success]{subcommand.title()}d schedule {schedule_id}.[/]")
+            console.print_json(data=response)
+            return True
+
+        raise ValueError(f"Unknown schedules subcommand: {subcommand}")
+    except ValueError as exc:
+        console.print(f"[anton.warning]{exc}[/]")
+        _print_schedules_usage(console)
+        return True
+    except RuntimeError as exc:
+        console.print(f"[anton.warning]{exc}[/]")
+        console.print("[anton.muted]Start service with: anton serve[/]")
+        return True
+
+
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
@@ -866,6 +1314,8 @@ def _print_slash_help(console: Console) -> None:
     console.print("  [bold]/setup[/]    — Configure provider, model, and API key")
     console.print("  [bold]/connect[/]  — Connect to a data source (guided credential collection)")
     console.print("  [bold]/paste[/]    — Attach clipboard image to your message")
+    console.print("  [bold]/skills[/]   — Manage skills via service API (list/show/create/version/run)")
+    console.print("  [bold]/schedules[/]— Manage schedules via service API (list/show/create/trigger/pause/resume)")
     console.print("  [bold]/help[/]     — Show this help message")
     console.print("  [bold]exit[/]                  — Quit the chat")
     console.print()
@@ -1038,6 +1488,12 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                             "connection in the scratchpad."
                         )
                     # Fall through to turn_stream
+                elif cmd == "/skills":
+                    await _handle_skills_slash_command(console, stripped)
+                    continue
+                elif cmd == "/schedules":
+                    await _handle_schedules_slash_command(console, stripped)
+                    continue
                 else:
                     console.print(f"[anton.warning]Unknown command: {cmd}[/]")
                     continue
