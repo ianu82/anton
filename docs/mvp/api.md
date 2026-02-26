@@ -119,6 +119,52 @@ Request body:
 }
 ```
 
+## Skills
+
+### `POST /skills`
+
+Create a reusable, parameterized prompt skill.
+
+Request:
+
+```json
+{
+  "name": "cohort_churn",
+  "description": "Analyze churn by cohort",
+  "prompt_template": "Show churn by {dimension} for {period}.",
+  "metadata": {"team": "analytics"}
+}
+```
+
+### `GET /skills`
+
+List skills with latest version metadata.
+
+### `GET /skills/{skill_id}`
+
+Fetch one skill and its latest template/version details.
+
+### `POST /skills/{skill_id}/versions`
+
+Create a new version for an existing skill.
+
+### `POST /skills/{skill_id}/run`
+
+Render a skill template with params and execute it as a normal session turn.
+
+Request:
+
+```json
+{
+  "session_id": "abc123",
+  "version": 2,
+  "params": {
+    "dimension": "cohort",
+    "period": "Q1"
+  }
+}
+```
+
 ## Metrics
 
 ### `GET /metrics`

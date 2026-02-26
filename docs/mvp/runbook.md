@@ -25,6 +25,7 @@ anton serve --host 127.0.0.1 --port 8000
 3. `GET /sessions/{id}/events`
 4. `GET /runs/{run_id}/trace`
 5. `POST /runs/{run_id}/cancel` (optional cancellation check)
+6. `POST /skills` + `POST /skills/{skill_id}/run` (optional reusable workflow check)
 
 ## Approval Handling
 

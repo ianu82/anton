@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sqlite3
+from string import Formatter
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -30,9 +32,58 @@ class ApprovalDecisionRequest(BaseModel):
     note: str | None = None
 
 
+class SkillCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    prompt_template: str
+    metadata: dict[str, Any] | None = None
+
+
+class SkillVersionRequest(BaseModel):
+    prompt_template: str
+
+
+class SkillRunRequest(BaseModel):
+    session_id: str
+    params: dict[str, str] | None = None
+    version: int | None = None
+    idempotency_key: str | None = None
+    wait_for_completion: bool = True
+    wait_timeout_seconds: float = 300.0
+
+
+def _extract_template_fields(prompt_template: str) -> list[str]:
+    fields: set[str] = set()
+    for _literal, field_name, _format_spec, _conversion in Formatter().parse(prompt_template):
+        if field_name is None:
+            continue
+        field = field_name.strip()
+        if not field:
+            continue
+        if "." in field or "[" in field or "]" in field:
+            raise ValueError(f"Unsupported placeholder '{field}'. Use simple names like '{{metric}}'.")
+        fields.add(field)
+    return sorted(fields)
+
+
+def _render_prompt_template(prompt_template: str, *, required_params: list[str], params: dict[str, str] | None) -> str:
+    provided = dict(params or {})
+    missing = [field for field in required_params if field not in provided]
+    if missing:
+        missing_csv = ", ".join(sorted(missing))
+        raise ValueError(f"Missing required skill params: {missing_csv}")
+    try:
+        rendered = prompt_template.format(**provided)
+    except KeyError as exc:
+        raise ValueError(f"Missing required skill param: {exc.args[0]}") from exc
+    if not rendered.strip():
+        raise ValueError("Rendered skill prompt is empty.")
+    return rendered
+
+
 def create_app(settings: AntonSettings | None = None) -> FastAPI:
     resolved_settings = settings or AntonSettings()
-    resolved_settings.resolve_workspace(str(Path.cwd()))
+    resolved_settings.resolve_workspace(str(resolved_settings.workspace_path))
 
     service_root = Path(resolved_settings.workspace_path) / ".anton" / "service"
     store = ServiceStore(
@@ -144,6 +195,88 @@ def create_app(settings: AntonSettings | None = None) -> FastAPI:
         if result is None:
             raise HTTPException(status_code=404, detail=f"Unknown approval_id '{approval_id}'.")
         return result
+
+    @app.post("/skills")
+    async def create_skill(req: SkillCreateRequest) -> dict[str, Any]:
+        name = req.name.strip()
+        prompt_template = req.prompt_template.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Skill name cannot be empty.")
+        if not prompt_template:
+            raise HTTPException(status_code=400, detail="Skill prompt_template cannot be empty.")
+        try:
+            required_params = _extract_template_fields(prompt_template)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return store.create_skill(
+                name=name,
+                description=req.description.strip(),
+                prompt_template=prompt_template,
+                required_params=required_params,
+                metadata=req.metadata,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail=f"Skill name '{name}' already exists.") from exc
+
+    @app.get("/skills")
+    async def list_skills(limit: int = 200) -> dict[str, Any]:
+        return {"skills": store.list_skills(limit=limit)}
+
+    @app.get("/skills/{skill_id}")
+    async def get_skill(skill_id: str) -> dict[str, Any]:
+        skill = store.get_skill(skill_id)
+        if skill is None:
+            raise HTTPException(status_code=404, detail=f"Unknown skill_id '{skill_id}'.")
+        return skill
+
+    @app.post("/skills/{skill_id}/versions")
+    async def create_skill_version(skill_id: str, req: SkillVersionRequest) -> dict[str, Any]:
+        prompt_template = req.prompt_template.strip()
+        if not prompt_template:
+            raise HTTPException(status_code=400, detail="Skill prompt_template cannot be empty.")
+        try:
+            required_params = _extract_template_fields(prompt_template)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        skill = store.add_skill_version(
+            skill_id=skill_id,
+            prompt_template=prompt_template,
+            required_params=required_params,
+        )
+        if skill is None:
+            raise HTTPException(status_code=404, detail=f"Unknown skill_id '{skill_id}'.")
+        return skill
+
+    @app.post("/skills/{skill_id}/run")
+    async def run_skill(skill_id: str, req: SkillRunRequest) -> dict[str, Any]:
+        template = store.get_skill_template(skill_id=skill_id, version=req.version)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Unknown skill_id/version combination for '{skill_id}'.")
+        try:
+            rendered_prompt = _render_prompt_template(
+                template["prompt_template"],
+                required_params=template["required_params"],
+                params=req.params,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            result = await runtime.run_turn(
+                session_id=req.session_id,
+                message=rendered_prompt,
+                idempotency_key=req.idempotency_key,
+                wait_for_completion=req.wait_for_completion,
+                wait_timeout_seconds=req.wait_timeout_seconds,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "skill_id": skill_id,
+            "skill_version": template["version"],
+            "rendered_prompt": rendered_prompt,
+            **result,
+        }
 
     @app.get("/metrics")
     async def metrics() -> dict[str, Any]:
