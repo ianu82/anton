@@ -31,3 +31,6 @@ anton/
     ├── branding.py        # Banner/dashboard rendering
     └── theme.py           # Console theme utilities
 ```
+
+The scratchpad is a local Python subprocess with Anton's normal process privileges.
+It is convenient and persistent, but it is not a security sandbox.

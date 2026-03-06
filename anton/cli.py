@@ -140,6 +140,7 @@ app = typer.Typer(
 )
 skills_app = typer.Typer(help="Manage service skills (requires anton serve).")
 schedules_app = typer.Typer(help="Manage scheduled runs (requires anton serve).")
+runtime_app = typer.Typer(help="Inspect Anton runtime state.")
 
 
 def _make_console() -> Console:
@@ -840,3 +841,49 @@ def version() -> None:
 
 app.add_typer(skills_app, name="skills")
 app.add_typer(schedules_app, name="schedules")
+app.add_typer(runtime_app, name="runtime")
+
+
+@runtime_app.command("stats")
+def runtime_stats() -> None:
+    """Summarize local package telemetry."""
+    from anton.runtime import load_package_events, package_events_path, summarize_package_events
+
+    path = package_events_path()
+    events = load_package_events(path)
+    if not events:
+        console.print(f"[dim]No package telemetry recorded yet at {path}.[/]")
+        return
+
+    summary = summarize_package_events(events)
+    console.print(f"[anton.muted]Package telemetry: {path}[/]")
+    console.print(f"[bold]Total events:[/] {summary.total_events}")
+
+    events_table = Table(title="Event Counts")
+    events_table.add_column("Event", style="anton.cyan")
+    events_table.add_column("Count", justify="right")
+    for event_name, count in summary.event_counts:
+        events_table.add_row(event_name, str(count))
+    console.print(events_table)
+
+    package_table = Table(title="Top Packages")
+    package_table.add_column("Package", style="anton.cyan")
+    package_table.add_column("Events", justify="right")
+    package_table.add_column("Failures", justify="right")
+    package_table.add_column("Workspaces", justify="right")
+    for row in summary.package_rows[:15]:
+        package_table.add_row(
+            row.name,
+            str(row.events),
+            str(row.failures),
+            str(row.workspaces),
+        )
+    console.print(package_table)
+
+    if summary.profile_counts:
+        profile_table = Table(title="Profiles")
+        profile_table.add_column("Profile", style="anton.cyan")
+        profile_table.add_column("Events", justify="right")
+        for profile, count in summary.profile_counts:
+            profile_table.add_row(profile, str(count))
+        console.print(profile_table)
