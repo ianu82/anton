@@ -14,6 +14,28 @@ from anton.sandbox import build_sandbox_launch, ensure_execution_mode_supported
 
 
 class TestSandboxSupport:
+    def test_safe_modes_ignore_top_level_venv_dir_in_workspace_guard(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_module, "ensure_execution_mode_supported", lambda mode: ExecutionMode.coerce(mode))
+
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        workspace.mkdir()
+        overlay.mkdir()
+        venv_bin = workspace / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python3").symlink_to(sys.executable)
+
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable=str(overlay / "Scripts" / "python.exe"),
+            args=["script.py"],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+
+        assert spec.runner == "windows_read_only"
+
     def test_windows_supports_safe_modes(self, monkeypatch):
         monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
         assert ensure_execution_mode_supported(ExecutionMode.READ_ONLY) is ExecutionMode.READ_ONLY
@@ -90,6 +112,27 @@ class TestSandboxSupport:
         assert '(subpath "' in spec.profile_text
         assert f'(subpath "{workspace.resolve()}")' in spec.profile_text
 
+    def test_darwin_launch_denies_excluded_tool_dirs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "darwin")
+        monkeypatch.setattr(sandbox_module, "_find_sandbox_exec", lambda: "/usr/bin/sandbox-exec")
+
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        (workspace / ".venv").mkdir(parents=True)
+        overlay.mkdir()
+
+        spec = build_sandbox_launch(
+            ExecutionMode.WORKSPACE_WRITE,
+            executable="/usr/bin/python3",
+            args=["-c", "print('ok')"],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+
+        assert "(deny file-read-data" in spec.profile_text
+        assert f'(subpath "{(workspace / ".venv").resolve()}")' in spec.profile_text
+        assert "(deny file-write*" in spec.profile_text
+
     def test_linux_launch_uses_bwrap(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
         monkeypatch.setattr(sandbox_module, "_find_bwrap", lambda: "/usr/bin/bwrap")
@@ -126,12 +169,74 @@ class TestSandboxSupport:
         assert str(anton_root) in spec.argv
         assert str(python_home) in spec.argv
 
+    def test_linux_launch_masks_excluded_tool_dirs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
+        monkeypatch.setattr(sandbox_module, "_find_bwrap", lambda: "/usr/bin/bwrap")
+        monkeypatch.setattr(sandbox_module, "_linux_dependency_dirs", lambda executable: [])
+
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        (workspace / ".venv").mkdir(parents=True)
+        overlay.mkdir()
+
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable="/usr/bin/python3",
+            args=["-c", "print('ok')"],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+
+        assert "--tmpfs" in spec.argv
+        assert str((workspace / ".venv").resolve()) in spec.argv
+
 
 @pytest.mark.skipif(
     sys.platform != "darwin" or shutil.which("sandbox-exec") is None,
     reason="sandbox-exec integration is only available on macOS hosts with sandbox-exec",
 )
 class TestDarwinSandboxIntegration:
+    def test_read_only_blocks_excluded_tool_dir_reads(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        excluded = workspace / ".venv"
+        workspace.mkdir()
+        overlay.mkdir()
+        excluded.mkdir()
+        (excluded / "secret.txt").write_text("top-secret", encoding="utf-8")
+        visible = workspace / "visible.txt"
+        visible.write_text("visible", encoding="utf-8")
+
+        code = (
+            "from pathlib import Path; import sys\n"
+            "visible = Path(sys.argv[1])\n"
+            "hidden = Path(sys.argv[2])\n"
+            "print(visible.read_text())\n"
+            "try:\n"
+            "    print(hidden.read_text())\n"
+            "except Exception as exc:\n"
+            "    print(type(exc).__name__)\n"
+        )
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable=sys.executable,
+            args=["-c", code, str(visible), str(excluded / "secret.txt")],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+        result = subprocess.run(
+            spec.argv,
+            capture_output=True,
+            text=True,
+            cwd=str(workspace),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            check=False,
+        )
+
+        assert "visible" in result.stdout
+        assert "top-secret" not in result.stdout
+        assert "PermissionError" in result.stdout or result.returncode != 0
+
     def test_read_only_blocks_outside_workspace_reads(self, tmp_path):
         workspace = tmp_path / "workspace"
         overlay = tmp_path / "overlay"
