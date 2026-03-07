@@ -1,0 +1,9 @@
+{
+  "description": "Anton runtime extension for classical ML workflows.",
+  "extends": [
+    "base"
+  ],
+  "packages": [
+    "scikit-learn==1.8.0"
+  ]
+}
