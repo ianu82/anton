@@ -31,7 +31,7 @@ class TestScratchpadExecutionPolicy:
         assert env["ANTHROPIC_API_KEY"] == "ant-key"
         assert env["OPENAI_API_KEY"] == "openai-key"
         assert env["OPENAI_BASE_URL"] == "https://example.test/v1"
-        assert env["ANTON_MINDS_API_KEY"] == "minds-key"
+        assert env["MINDS_API_KEY"] == "minds-key"
         assert env["ANTON_SCRATCHPAD_MODEL"] == "claude-test"
         assert env["ANTON_SCRATCHPAD_PROVIDER"] == "anthropic"
         assert env["ANTON_RUNTIME_PROFILE"] == "base"
@@ -82,7 +82,18 @@ class TestScratchpadExecutionPolicy:
 
         assert policy.llm_helpers_available() is False
         assert policy.minds_query_available() is False
-        assert "unavailable in this execution mode" in policy.helper_prompt_note()
+        assert "becomes available when a Minds datasource is configured" in policy.helper_prompt_note()
+
+    def test_restricted_modes_keep_brokered_minds_helper_when_configured(self):
+        policy = ScratchpadExecutionPolicy(
+            mode=ExecutionMode.READ_ONLY,
+            minds_datasource="warehouse",
+        )
+
+        assert policy.llm_helpers_available() is False
+        assert policy.minds_query_available() is True
+        assert "query_minds_data()" in policy.helper_prompt_note()
+        assert "brokered Minds helper" in policy.helper_prompt_note()
 
 
 class TestScratchpadManagerPolicy:

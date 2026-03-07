@@ -359,8 +359,8 @@ class TestRuntimeContext:
 
         assert "CONNECTED DATASOURCE" in context
         assert "query_minds_data()" in context
-        assert "unavailable in execution mode `read_only`" in context
-        assert "pre-loaded in the scratchpad namespace" not in context
+        assert "pre-loaded in the scratchpad namespace" in context
+        assert "unavailable in execution mode" not in context
 
     def test_runtime_context_keeps_query_minds_data_in_full_trust(self):
         settings = AntonSettings(
@@ -517,7 +517,7 @@ class TestMindsSetupRecovery:
                 )
             return [{"name": "warehouse", "engine": "postgres"}]
 
-        monkeypatch.setattr("anton.chat._minds_list_datasources", fake_list)
+        monkeypatch.setattr("anton.chat.minds_list_datasources", fake_list)
         rebuilt = object()
         monkeypatch.setattr("anton.chat._rebuild_session", lambda **kwargs: rebuilt)
 
@@ -571,7 +571,7 @@ class TestMindsSetupRecovery:
                 raise urllib.error.URLError(socket.timeout("timed out"))
             return [{"name": "warehouse", "engine": "postgres"}]
 
-        monkeypatch.setattr("anton.chat._minds_list_datasources", fake_list)
+        monkeypatch.setattr("anton.chat.minds_list_datasources", fake_list)
         rebuilt = object()
         monkeypatch.setattr("anton.chat._rebuild_session", lambda **kwargs: rebuilt)
 

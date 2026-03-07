@@ -48,6 +48,7 @@ _BASE_ENV_ALLOWLIST = {
 @dataclass
 class ScratchpadExecutionPolicy:
     mode: ExecutionMode = ExecutionMode.FULL_TRUST
+    minds_datasource: str = ""
     granted_env_vars: set[str] = field(default_factory=set)
     granted_env: dict[str, str] = field(default_factory=dict)
 
@@ -74,20 +75,30 @@ class ScratchpadExecutionPolicy:
         return self.mode is ExecutionMode.FULL_TRUST
 
     def minds_query_available(self) -> bool:
-        return self.mode is ExecutionMode.FULL_TRUST
+        return bool(self.minds_datasource)
 
     def helper_prompt_note(self) -> str:
         if self.mode is ExecutionMode.FULL_TRUST:
+            minds_note = (
+                "`query_minds_data()` is available when a Minds datasource is configured."
+                if self.minds_query_available()
+                else "`query_minds_data()` becomes available when a Minds datasource is configured."
+            )
             return (
                 "Secret-backed scratchpad helpers can be available in this session. "
                 "`get_llm()` and `agentic_loop()` are available when Anton has a coding model "
-                "configured for the scratchpad, and `query_minds_data()` is available when a "
-                "Minds datasource is configured."
+                f"configured for the scratchpad, and {minds_note}"
             )
+        minds_note = (
+            "If a Minds datasource is configured, `query_minds_data()` remains available "
+            "through Anton's brokered Minds helper."
+            if self.minds_query_available()
+            else "`query_minds_data()` becomes available when a Minds datasource is configured."
+        )
         return (
-            "Secret-backed scratchpad helpers like `get_llm()`, `agentic_loop()`, and "
-            "`query_minds_data()` are unavailable in this execution mode unless Anton "
-            "explicitly grants them."
+            "Secret-backed scratchpad helpers like `get_llm()` and `agentic_loop()` are "
+            "unavailable in this execution mode unless Anton explicitly grants them. "
+            f"{minds_note}"
         )
 
     def build_subprocess_env(
@@ -145,8 +156,6 @@ class ScratchpadExecutionPolicy:
                 env["OPENAI_API_KEY"] = source_env["ANTON_OPENAI_API_KEY"]
             if "OPENAI_BASE_URL" not in env and "ANTON_OPENAI_BASE_URL" in source_env:
                 env["OPENAI_BASE_URL"] = source_env["ANTON_OPENAI_BASE_URL"]
-            if "ANTON_MINDS_API_KEY" not in env and "MINDS_API_KEY" in source_env:
-                env["ANTON_MINDS_API_KEY"] = source_env["MINDS_API_KEY"]
 
             sdk_key = {
                 "anthropic": "ANTHROPIC_API_KEY",

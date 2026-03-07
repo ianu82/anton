@@ -10,6 +10,7 @@ import pytest
 
 import anton.scratchpad as scratchpad_module
 from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
+from anton.runtime import ensure_runtime
 from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
 
 pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
@@ -65,6 +66,43 @@ class TestScratchpadBasicExecution:
             cell = await pad.execute('print(json.dumps({"a": 1}))')
             assert cell.stdout.strip() == '{"a": 1}'
             assert cell.error is None
+        finally:
+            await pad.close()
+
+    async def test_brokered_minds_query_available_in_read_only(self, tmp_path):
+        ensure_runtime("base")
+        queries: list[tuple[str, str | None]] = []
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        def fake_minds_query(query: str, datasource: str | None = None) -> dict:
+            queries.append((query, datasource))
+            return {
+                "type": "table",
+                "data": [{"answer": 42}],
+                "column_names": ["answer"],
+                "error_message": None,
+            }
+
+        pad = Scratchpad(
+            name="minds",
+            _workspace_path=workspace,
+            _execution_policy=ScratchpadExecutionPolicy(
+                mode=ExecutionMode.READ_ONLY,
+                minds_datasource="warehouse",
+            ),
+            _minds_datasource="warehouse",
+            _minds_query_handler=fake_minds_query,
+        )
+        await pad.start()
+        try:
+            cell = await pad.execute(
+                "result = query_minds_data('SELECT 42 AS answer')\n"
+                "print(result['data'][0]['answer'])"
+            )
+            assert cell.error is None
+            assert cell.stdout.strip() == "42"
+            assert queries == [("SELECT 42 AS answer", None)]
         finally:
             await pad.close()
 
