@@ -31,20 +31,22 @@ class TestWindowsSandboxConfig:
             args=["script.py"],
             workspace_path=tmp_path / "workspace",
             overlay_dir=tmp_path / "overlay",
+            excluded_paths=[tmp_path / "workspace" / ".venv"],
             runtime_path=tmp_path / "runtime",
             anton_root=tmp_path / "repo",
             python_roots=[tmp_path / "python-home"],
             extra_write_paths=[tmp_path / "boot"],
         )
 
-        grants = {(grant.path, grant.access) for grant in config.access_grants()}
+        grants = {(grant.path, grant.access, grant.effect) for grant in config.access_grants()}
 
-        assert (str((tmp_path / "overlay").resolve()), "modify") in grants
-        assert (str((tmp_path / "boot").resolve()), "modify") in grants
-        assert (str((tmp_path / "workspace").resolve()), "read") in grants
-        assert (str((tmp_path / "runtime").resolve()), "read") in grants
-        assert (str((tmp_path / "repo").resolve()), "read") in grants
-        assert (str((tmp_path / "python-home").resolve()), "read") in grants
+        assert (str((tmp_path / "overlay").resolve()), "modify", "grant") in grants
+        assert (str((tmp_path / "boot").resolve()), "modify", "grant") in grants
+        assert (str((tmp_path / "workspace").resolve()), "read", "grant") in grants
+        assert (str((tmp_path / "workspace" / ".venv").resolve()), "full", "deny") in grants
+        assert (str((tmp_path / "runtime").resolve()), "read", "grant") in grants
+        assert (str((tmp_path / "repo").resolve()), "read", "grant") in grants
+        assert (str((tmp_path / "python-home").resolve()), "read", "grant") in grants
 
     def test_access_grants_for_workspace_write(self, tmp_path):
         config = WindowsSandboxConfig.build(
@@ -53,12 +55,14 @@ class TestWindowsSandboxConfig:
             args=["script.py"],
             workspace_path=tmp_path / "workspace",
             overlay_dir=tmp_path / "overlay",
+            excluded_paths=[tmp_path / "workspace" / ".venv"],
         )
 
-        grants = {(grant.path, grant.access) for grant in config.access_grants()}
+        grants = {(grant.path, grant.access, grant.effect) for grant in config.access_grants()}
 
-        assert (str((tmp_path / "workspace").resolve()), "modify") in grants
-        assert (str((tmp_path / "overlay").resolve()), "modify") in grants
+        assert (str((tmp_path / "workspace").resolve()), "modify", "grant") in grants
+        assert (str((tmp_path / "workspace" / ".venv").resolve()), "full", "deny") in grants
+        assert (str((tmp_path / "overlay").resolve()), "modify", "grant") in grants
 
     def test_launcher_command_uses_module_entrypoint(self, tmp_path):
         config = WindowsSandboxConfig.build(

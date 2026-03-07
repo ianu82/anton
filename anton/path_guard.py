@@ -4,6 +4,8 @@ import os
 import stat
 from pathlib import Path
 
+from anton.workspace_scope import is_safe_mode_excluded_dir
+
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
 
 
@@ -69,6 +71,8 @@ def assert_workspace_tree_is_direct(root: Path, *, mode_name: str) -> None:
         with os.scandir(current) as entries:
             for entry in entries:
                 entry_path = Path(entry.path)
+                if current == resolved_root and is_safe_mode_excluded_dir(resolved_root, entry_path):
+                    continue
                 if entry.is_symlink():
                     raise RuntimeError(
                         f"{mode_name} mode rejected this workspace because it contains a symlink: {entry.path}"

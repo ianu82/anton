@@ -26,6 +26,28 @@ class TestWindowsAcl:
             "/q",
         ]
 
+    def test_grant_spec_supports_recursive_deny_rules(self, tmp_path):
+        directory = tmp_path / ".venv"
+        directory.mkdir()
+
+        command, is_dir = windows_acl._grant_spec(
+            directory,
+            "full",
+            recursive=True,
+            effect="deny",
+        )
+
+        assert is_dir is True
+        assert command == [
+            "icacls",
+            str(directory.resolve()),
+            "/deny",
+            "(OI)(CI)(F)",
+            "/t",
+            "/c",
+            "/q",
+        ]
+
     def test_grant_access_to_sid_invokes_icacls(self, monkeypatch, tmp_path):
         monkeypatch.setattr(windows_acl.sys, "platform", "win32")
         directory = tmp_path / "workspace"

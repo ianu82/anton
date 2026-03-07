@@ -17,6 +17,7 @@ def _resolve(path: str | Path) -> str:
 class WindowsAccessGrant:
     path: str
     access: str
+    effect: str = "grant"
     recursive: bool = True
 
 
@@ -27,6 +28,7 @@ class WindowsSandboxConfig:
     args: tuple[str, ...]
     workspace_path: str
     overlay_dir: str
+    excluded_paths: tuple[str, ...] = ()
     runtime_path: str | None = None
     anton_root: str | None = None
     python_roots: tuple[str, ...] = ()
@@ -41,6 +43,7 @@ class WindowsSandboxConfig:
         args: list[str],
         workspace_path: Path,
         overlay_dir: Path,
+        excluded_paths: list[Path] | None = None,
         runtime_path: Path | None = None,
         anton_root: Path | None = None,
         python_roots: list[Path] | None = None,
@@ -53,6 +56,7 @@ class WindowsSandboxConfig:
             args=tuple(args),
             workspace_path=_resolve(workspace_path),
             overlay_dir=_resolve(overlay_dir),
+            excluded_paths=tuple(_resolve(path) for path in (excluded_paths or [])),
             runtime_path=_resolve(runtime_path) if runtime_path is not None else None,
             anton_root=_resolve(anton_root) if anton_root is not None else None,
             python_roots=tuple(_resolve(path) for path in (python_roots or [])),
@@ -73,6 +77,7 @@ class WindowsSandboxConfig:
             args=tuple(raw.get("args", [])),
             workspace_path=str(raw["workspace_path"]),
             overlay_dir=str(raw["overlay_dir"]),
+            excluded_paths=tuple(str(item) for item in raw.get("excluded_paths", [])),
             runtime_path=str(raw["runtime_path"]) if raw.get("runtime_path") else None,
             anton_root=str(raw["anton_root"]) if raw.get("anton_root") else None,
             python_roots=tuple(str(item) for item in raw.get("python_roots", [])),
@@ -84,14 +89,14 @@ class WindowsSandboxConfig:
         ordered: list[WindowsAccessGrant] = []
         seen: set[tuple[str, str]] = set()
 
-        def add(path: str | None, access: str) -> None:
+        def add(path: str | None, access: str, *, effect: str = "grant") -> None:
             if not path:
                 return
-            key = (path, access)
+            key = (path, access, effect)
             if key in seen:
                 return
             seen.add(key)
-            ordered.append(WindowsAccessGrant(path=path, access=access))
+            ordered.append(WindowsAccessGrant(path=path, access=access, effect=effect))
 
         add(self.overlay_dir, "modify")
         for path in self.extra_write_paths:
@@ -104,6 +109,8 @@ class WindowsSandboxConfig:
             add(self.workspace_path, "modify")
         elif mode is ExecutionMode.READ_ONLY:
             add(self.workspace_path, "read")
+        for path in self.excluded_paths:
+            add(path, "full", effect="deny")
         return ordered
 
 

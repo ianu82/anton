@@ -10,6 +10,7 @@ from pathlib import Path
 
 from anton.execution_policy import ExecutionMode
 from anton.path_guard import assert_workspace_tree_is_direct
+from anton.workspace_scope import safe_mode_excluded_dirs
 from anton.windows_sandbox import WindowsSandboxConfig, windows_launcher_command
 
 
@@ -205,6 +206,7 @@ def _darwin_profile(
     executable: str,
     workspace_path: Path,
     overlay_dir: Path,
+    excluded_paths: list[Path],
     runtime_path: Path | None,
     anton_root: Path | None,
     python_roots: list[Path],
@@ -245,6 +247,7 @@ def _darwin_profile(
         if ancestor.exists() and all(str(ancestor) != str(existing) for existing in read_roots):
             read_roots.insert(0, ancestor)
     read_rules = "\n".join(rule for path in read_roots for rule in _darwin_read_rules(path))
+    deny_rules = "\n".join(rule for path in excluded_paths for rule in _darwin_read_rules(path))
     write_rules = "\n".join(
         f'    (subpath "{path}")'
         for path in writable_paths
@@ -256,12 +259,24 @@ def _darwin_profile(
         "(allow process*)\n"
         "(deny network*)\n"
         "(allow file-read-metadata)\n"
+        + (
         "(allow file-read-data\n"
         f"{read_rules}\n"
         ")\n"
         "(allow file-write*\n"
         f"{write_rules}\n"
         ")\n"
+        )
+        + (
+            "(deny file-read-data\n"
+            f"{deny_rules}\n"
+            ")\n"
+            "(deny file-write*\n"
+            f"{deny_rules}\n"
+            ")\n"
+            if deny_rules
+            else ""
+        )
     )
 
 
@@ -271,6 +286,7 @@ def _linux_bwrap_argv(
     executable: str,
     workspace_path: Path,
     overlay_dir: Path,
+    excluded_paths: list[Path],
     runtime_path: Path | None,
     anton_root: Path | None,
     python_roots: list[Path],
@@ -317,6 +333,8 @@ def _linux_bwrap_argv(
         argv.extend(["--ro-bind", str(path), str(path)])
     for path in writable_roots:
         argv.extend(["--bind", str(path), str(path)])
+    for path in excluded_paths:
+        argv.extend(["--tmpfs", str(path)])
     return argv
 
 
@@ -327,6 +345,7 @@ def _windows_launch_spec(
     args: list[str],
     workspace_path: Path,
     overlay_dir: Path,
+    excluded_paths: list[Path],
     runtime_path: Path | None = None,
     anton_root: Path | None = None,
     python_roots: list[Path] | None = None,
@@ -338,6 +357,7 @@ def _windows_launch_spec(
         args=args,
         workspace_path=workspace_path,
         overlay_dir=overlay_dir,
+        excluded_paths=excluded_paths,
         runtime_path=runtime_path,
         anton_root=anton_root,
         python_roots=python_roots,
@@ -373,6 +393,7 @@ def build_sandbox_launch(
     extra_paths = [_resolve_path(path) for path in (extra_write_paths or [])]
     resolved_python_roots = _resolve_python_roots(python_roots)
     assert_workspace_tree_is_direct(workspace, mode_name=resolved.value)
+    excluded_paths = safe_mode_excluded_dirs(workspace)
 
     if sys.platform == "win32":
         return _windows_launch_spec(
@@ -381,6 +402,7 @@ def build_sandbox_launch(
             args=args,
             workspace_path=workspace,
             overlay_dir=overlay,
+            excluded_paths=excluded_paths,
             runtime_path=runtime_path,
             anton_root=anton_root,
             python_roots=resolved_python_roots,
@@ -393,6 +415,7 @@ def build_sandbox_launch(
             executable=executable,
             workspace_path=workspace,
             overlay_dir=overlay,
+            excluded_paths=excluded_paths,
             runtime_path=runtime_path,
             anton_root=anton_root,
             python_roots=resolved_python_roots,
@@ -412,6 +435,7 @@ def build_sandbox_launch(
         executable=executable,
         workspace_path=workspace,
         overlay_dir=overlay,
+        excluded_paths=excluded_paths,
         runtime_path=runtime_path,
         anton_root=anton_root,
         python_roots=resolved_python_roots,
