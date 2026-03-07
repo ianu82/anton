@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import shutil
 import ssl
 import sys
@@ -96,6 +97,72 @@ def _unix_read_roots(
     roots.append(executable_path if executable_path.is_dir() else executable_path.parent)
     roots.extend(_certificate_paths())
     return _dedupe_paths(roots)
+
+
+def _linux_dependency_dirs(executable: str) -> list[Path]:
+    ldd = shutil.which("ldd")
+    if ldd is None:
+        return []
+
+    try:
+        result = subprocess.run(
+            [ldd, executable],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+
+    roots: list[Path] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "=>" in stripped:
+            candidate = stripped.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = stripped.split(" ", 1)[0]
+        if not candidate.startswith("/"):
+            continue
+        path = Path(candidate)
+        if path.exists():
+            roots.append(path.resolve().parent)
+    return _dedupe_paths(roots)
+
+
+def _linux_runtime_read_roots(
+    *,
+    executable: str,
+    runtime_path: Path | None,
+    anton_root: Path | None,
+    python_roots: list[Path],
+) -> list[Path]:
+    roots = [*python_roots, *_certificate_paths(), *_linux_dependency_dirs(executable)]
+    if runtime_path is not None:
+        roots.append(_resolve_path(runtime_path))
+    if anton_root is not None:
+        roots.append(_resolve_path(anton_root))
+
+    raw_executable = Path(executable).expanduser()
+    if raw_executable.is_absolute():
+        roots.append(raw_executable if raw_executable.is_dir() else raw_executable.parent)
+
+    resolved_executable = _resolve_path(executable)
+    roots.append(resolved_executable if resolved_executable.is_dir() else resolved_executable.parent)
+    return _dedupe_paths(roots)
+
+
+def _linux_parent_dirs(paths: list[Path]) -> list[Path]:
+    parents: set[Path] = set()
+    for path in paths:
+        current = path if path.is_dir() else path.parent
+        while current != current.parent:
+            parents.add(current)
+            current = current.parent
+    return sorted(parents, key=lambda item: (len(item.parts), str(item)))
 
 
 def _darwin_read_rules(path: Path) -> list[str]:
@@ -201,8 +268,12 @@ def _darwin_profile(
 def _linux_bwrap_argv(
     mode: ExecutionMode,
     *,
+    executable: str,
     workspace_path: Path,
     overlay_dir: Path,
+    runtime_path: Path | None,
+    anton_root: Path | None,
+    python_roots: list[Path],
     extra_write_paths: list[Path],
 ) -> list[str]:
     bwrap = _find_bwrap()
@@ -211,6 +282,20 @@ def _linux_bwrap_argv(
 
     workspace = _resolve_path(workspace_path)
     overlay = _resolve_path(overlay_dir)
+    writable_roots = [overlay, *(_resolve_path(path) for path in extra_write_paths)]
+    if mode is ExecutionMode.WORKSPACE_WRITE:
+        writable_roots.append(workspace)
+
+    read_only_roots = _linux_runtime_read_roots(
+        executable=executable,
+        runtime_path=runtime_path,
+        anton_root=anton_root,
+        python_roots=python_roots,
+    )
+    if mode is ExecutionMode.READ_ONLY:
+        read_only_roots.append(workspace)
+    read_only_roots = _dedupe_paths(read_only_roots)
+    mount_roots = _dedupe_paths([*read_only_roots, *writable_roots])
 
     argv = [
         bwrap,
@@ -221,21 +306,17 @@ def _linux_bwrap_argv(
         "/proc",
         "--dev",
         "/dev",
-        "--ro-bind",
-        "/",
-        "/",
-        "--bind",
-        str(overlay),
-        str(overlay),
         "--unshare-net",
+        "--chdir",
+        str(workspace),
     ]
-    for path in extra_write_paths:
-        resolved = _resolve_path(path)
-        argv.extend(["--bind", str(resolved), str(resolved)])
-    if mode is ExecutionMode.WORKSPACE_WRITE:
-        argv.extend(["--bind", str(workspace), str(workspace)])
-    else:
-        argv.extend(["--ro-bind", str(workspace), str(workspace)])
+
+    for parent in _linux_parent_dirs(mount_roots):
+        argv.extend(["--dir", str(parent)])
+    for path in read_only_roots:
+        argv.extend(["--ro-bind", str(path), str(path)])
+    for path in writable_roots:
+        argv.extend(["--bind", str(path), str(path)])
     return argv
 
 
@@ -328,12 +409,13 @@ def build_sandbox_launch(
 
     argv = _linux_bwrap_argv(
         resolved,
+        executable=executable,
         workspace_path=workspace,
         overlay_dir=overlay,
+        runtime_path=runtime_path,
+        anton_root=anton_root,
+        python_roots=resolved_python_roots,
         extra_write_paths=extra_paths,
     )
-    if runtime_path is not None:
-        runtime = _resolve_path(runtime_path)
-        argv.extend(["--ro-bind", str(runtime), str(runtime)])
     argv.extend([executable, *args])
     return SandboxLaunchSpec(argv=tuple(argv), runner=f"unix_{resolved.value}")

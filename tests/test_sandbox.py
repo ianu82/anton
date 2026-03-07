@@ -93,11 +93,20 @@ class TestSandboxSupport:
     def test_linux_launch_uses_bwrap(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
         monkeypatch.setattr(sandbox_module, "_find_bwrap", lambda: "/usr/bin/bwrap")
+        monkeypatch.setattr(sandbox_module, "_linux_dependency_dirs", lambda executable: [tmp_path / "libs"])
 
         workspace = tmp_path / "workspace"
         overlay = tmp_path / "overlay"
+        runtime = tmp_path / "runtime"
+        anton_root = tmp_path / "repo"
+        python_home = tmp_path / "python-home"
+        libs = tmp_path / "libs"
         workspace.mkdir()
         overlay.mkdir()
+        runtime.mkdir()
+        anton_root.mkdir()
+        python_home.mkdir()
+        libs.mkdir()
 
         spec = build_sandbox_launch(
             ExecutionMode.READ_ONLY,
@@ -105,12 +114,17 @@ class TestSandboxSupport:
             args=["-c", "print('ok')"],
             workspace_path=workspace,
             overlay_dir=overlay,
-            runtime_path=tmp_path / "runtime",
+            runtime_path=runtime,
+            anton_root=anton_root,
+            python_roots=[python_home],
         )
 
         assert spec.argv[0] == "/usr/bin/bwrap"
         assert "--unshare-net" in spec.argv
-        assert "--ro-bind" in spec.argv
+        assert list(zip(spec.argv, spec.argv[1:], spec.argv[2:])).count(("--ro-bind", "/", "/")) == 0
+        assert str(runtime) in spec.argv
+        assert str(anton_root) in spec.argv
+        assert str(python_home) in spec.argv
 
 
 @pytest.mark.skipif(
