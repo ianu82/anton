@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from anton.execution import ExecutionMode, build_scratchpad_env, parse_execution_mode
 from anton.runtime import (
     default_runtime_profile,
     ensure_runtime,
@@ -83,6 +84,7 @@ class Scratchpad:
     _profile: str = field(default_factory=default_runtime_profile, repr=False)
     _runtime_path: Path | None = field(default=None, repr=False)
     _runtime_lock_hash: str = field(default="", repr=False)
+    _execution_mode: ExecutionMode = field(default=ExecutionMode.FULL_TRUST, repr=False)
 
     _MAX_VENV_RETRIES = 3
 
@@ -265,34 +267,16 @@ class Scratchpad:
         os.close(fd)
         self._boot_path = path
 
-        env = os.environ.copy()
-        if self._coding_model:
-            env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
-        if self._coding_provider:
-            env["ANTON_SCRATCHPAD_PROVIDER"] = self._coding_provider
-        # Ensure the SDKs can find API keys under their expected names.
-        # Anton stores them as ANTON_*_API_KEY; the SDKs expect *_API_KEY.
-        if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
-            env["ANTHROPIC_API_KEY"] = env["ANTON_ANTHROPIC_API_KEY"]
-        if "OPENAI_API_KEY" not in env and "ANTON_OPENAI_API_KEY" in env:
-            env["OPENAI_API_KEY"] = env["ANTON_OPENAI_API_KEY"]
-        # If settings provided an explicit API key (e.g. from ~/.anton/.env or
-        # Pydantic settings), inject it so the subprocess SDK can authenticate.
-        if self._coding_api_key:
-            sdk_key = {
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-            }.get(self._coding_provider, "")
-            if sdk_key and sdk_key not in env:
-                env[sdk_key] = self._coding_api_key
-        # Pass uv path so the boot script can use it for auto-installing
-        # missing modules (same installer that created the venv).
         uv = self._find_uv()
-        if uv:
-            env["ANTON_UV_PATH"] = uv
-        if self._workspace_path is not None:
-            env["ANTON_WORKSPACE_PATH"] = str(self._workspace_path)
-        env["ANTON_RUNTIME_PROFILE"] = self._profile
+        env = build_scratchpad_env(
+            mode=self._execution_mode,
+            workspace_path=self._workspace_path,
+            coding_provider=self._coding_provider,
+            coding_model=self._coding_model,
+            coding_api_key=self._coding_api_key,
+            runtime_profile=self._profile,
+            uv_path=uv,
+        )
 
         # Ensure the anton package is importable in the subprocess (needed for
         # get_llm and skill loading). The boot script runs from a temp file, so
@@ -741,6 +725,7 @@ class ScratchpadManager:
         coding_api_key: str = "",
         secret_handler: Callable[[str, str], str | None] | None = None,
         workspace_path: Path | None = None,
+        execution_mode: str | ExecutionMode = ExecutionMode.FULL_TRUST,
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._coding_provider: str = coding_provider
@@ -748,6 +733,7 @@ class ScratchpadManager:
         self._coding_api_key: str = coding_api_key
         self._secret_handler = secret_handler
         self._workspace_path = workspace_path
+        self._execution_mode = parse_execution_mode(execution_mode)
         self._available_packages: list[str] = self.probe_packages()
 
     @staticmethod
@@ -773,6 +759,7 @@ class ScratchpadManager:
                 _secret_handler=self._secret_handler,
                 _workspace_path=self._workspace_path,
                 _profile=desired_profile,
+                _execution_mode=self._execution_mode,
             )
             await pad.start()
             self._pads[name] = pad

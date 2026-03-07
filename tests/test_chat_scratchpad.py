@@ -321,6 +321,28 @@ class TestScratchpadInstallViaChat:
         finally:
             await session.close()
 
+    async def test_install_blocked_in_safe_mode(self):
+        """Internal safe modes should reject explicit scratchpad installs."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(
+            side_effect=[
+                _scratchpad_response("Installing.", "install", "main", packages=["cowsay"]),
+                _text_response("Blocked."),
+            ]
+        )
+
+        session = ChatSession(mock_llm, execution_mode="read_only")
+        try:
+            await session.turn("install cowsay")
+            tool_result_msgs = [
+                m for m in session.history
+                if m["role"] == "user" and isinstance(m["content"], list)
+            ]
+            result_content = tool_result_msgs[0]["content"][0]["content"]
+            assert "disabled in execution mode" in result_content
+        finally:
+            await session.close()
+
     async def test_install_empty_packages_via_chat(self):
         """install with no packages returns a message without crashing."""
         mock_llm = AsyncMock()

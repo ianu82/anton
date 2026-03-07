@@ -385,6 +385,10 @@ async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
     if not code or not code.strip():
         return "No code provided."
 
+    policy = session._scratchpad_policy.authorize("exec")
+    if not policy.allow:
+        return policy.reason
+
     profile = str(tc_input.get("profile", "")).strip() or "base"
     try:
         pad = await session._scratchpads.get_or_create(name, profile=profile)
@@ -471,12 +475,18 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return format_cell_result(cell)
 
     elif action == "view":
+        policy = session._scratchpad_policy.authorize("view")
+        if not policy.allow:
+            return policy.reason
         pad = session._scratchpads._pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         return pad.view()
 
     elif action == "reset":
+        policy = session._scratchpad_policy.authorize("reset")
+        if not policy.allow:
+            return policy.reason
         pad = session._scratchpads._pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
@@ -484,9 +494,15 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return f"Scratchpad '{name}' reset. All state cleared."
 
     elif action == "remove":
+        policy = session._scratchpad_policy.authorize("remove")
+        if not policy.allow:
+            return policy.reason
         return await session._scratchpads.remove(name)
 
     elif action == "dump":
+        policy = session._scratchpad_policy.authorize("dump")
+        if not policy.allow:
+            return policy.reason
         pad = session._scratchpads._pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
@@ -496,6 +512,9 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         packages = tc_input.get("packages", [])
         if not packages:
             return "No packages specified."
+        policy = session._scratchpad_policy.authorize("install", packages=[str(pkg) for pkg in packages])
+        if not policy.allow:
+            return policy.reason
         profile = str(tc_input.get("profile", "")).strip() or "base"
         try:
             pad = await session._scratchpads.get_or_create(name, profile=profile)
