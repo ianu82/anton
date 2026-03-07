@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock
 
 import pytest
@@ -106,6 +107,74 @@ class TestPatchToolApplication:
                         "kind": "create",
                         "path": "blocked.txt",
                         "new_text": "blocked",
+                    }
+                ],
+            )
+
+    def test_symlinked_file_path_is_rejected(self, tmp_path):
+        workspace = Workspace(tmp_path)
+        workspace.initialize()
+        target = tmp_path / "target.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        link = tmp_path / "alias.txt"
+        link.symlink_to(target)
+        session = ChatSession(AsyncMock(), workspace=workspace)
+
+        with pytest.raises(RuntimeError, match="symlink"):
+            apply_workspace_edits(
+                session,
+                [
+                    {
+                        "kind": "replace",
+                        "path": "alias.txt",
+                        "old_text": "hello",
+                        "new_text": "anton",
+                    }
+                ],
+            )
+
+    def test_symlinked_parent_path_is_rejected(self, tmp_path):
+        workspace = Workspace(tmp_path)
+        workspace.initialize()
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        target = real_dir / "hello.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        alias_dir = tmp_path / "alias"
+        alias_dir.symlink_to(real_dir, target_is_directory=True)
+        session = ChatSession(AsyncMock(), workspace=workspace)
+
+        with pytest.raises(RuntimeError, match="symlink"):
+            apply_workspace_edits(
+                session,
+                [
+                    {
+                        "kind": "replace",
+                        "path": "alias/hello.txt",
+                        "old_text": "hello",
+                        "new_text": "anton",
+                    }
+                ],
+            )
+
+    def test_hard_linked_file_path_is_rejected(self, tmp_path):
+        workspace = Workspace(tmp_path)
+        workspace.initialize()
+        outside = tmp_path.parent / "outside.txt"
+        outside.write_text("outside\n", encoding="utf-8")
+        linked = tmp_path / "linked.txt"
+        os.link(outside, linked)
+        session = ChatSession(AsyncMock(), workspace=workspace)
+
+        with pytest.raises(RuntimeError, match="hard-linked"):
+            apply_workspace_edits(
+                session,
+                [
+                    {
+                        "kind": "replace",
+                        "path": "linked.txt",
+                        "old_text": "outside",
+                        "new_text": "inside",
                     }
                 ],
             )

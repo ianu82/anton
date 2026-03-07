@@ -46,6 +46,27 @@ class TestSandboxSupport:
         assert spec.runner == "windows_read_only"
         assert spec.argv[1:3] == ("-m", "anton.windows_launcher")
 
+    def test_read_only_rejects_hard_linked_workspace_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_module, "ensure_execution_mode_supported", lambda mode: ExecutionMode.coerce(mode))
+
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside", encoding="utf-8")
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        workspace.mkdir()
+        overlay.mkdir()
+        os.link(outside, workspace / "linked.txt")
+
+        with pytest.raises(RuntimeError, match="hard-linked file"):
+            build_sandbox_launch(
+                ExecutionMode.READ_ONLY,
+                executable=str(overlay / "Scripts" / "python.exe"),
+                args=["script.py"],
+                workspace_path=workspace,
+                overlay_dir=overlay,
+            )
+
     def test_darwin_launch_contains_network_deny(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sandbox_module.sys, "platform", "darwin")
         monkeypatch.setattr(sandbox_module, "_find_sandbox_exec", lambda: "/usr/bin/sandbox-exec")
