@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 import pytest
 
@@ -691,6 +692,93 @@ class TestScratchpadInstall:
             assert cell.stdout.strip() == "ok"
         finally:
             await pad.close()
+
+    async def test_install_packages_logs_telemetry(self, monkeypatch, tmp_path):
+        """install_packages should emit telemetry for install attempts."""
+        events = []
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"installed", None)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(
+            scratchpad_module,
+            "log_package_event",
+            lambda event, **kwargs: events.append((event, kwargs)),
+        )
+        monkeypatch.setattr(
+            scratchpad_module.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        pad = Scratchpad(name="telemetry-test", _workspace_path=tmp_path)
+        monkeypatch.setattr(pad, "_ensure_venv", lambda: None)
+        monkeypatch.setattr(pad, "_find_uv", lambda: None)
+        pad._venv_python = sys.executable
+
+        result = await pad.install_packages(["cowsay"], source="install_action")
+
+        assert result == "installed"
+        assert (
+            "explicit_install",
+            {
+                "package": "cowsay",
+                "scratchpad": "telemetry-test",
+                "source": "install_action",
+                "status": "started",
+                "workspace_path": tmp_path,
+            },
+        ) in events
+
+    async def test_install_packages_logs_failures(self, monkeypatch, tmp_path):
+        """install_packages should emit failure telemetry when pip fails."""
+        events = []
+
+        class FakeProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"boom", None)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(
+            scratchpad_module,
+            "log_package_event",
+            lambda event, **kwargs: events.append((event, kwargs)),
+        )
+        monkeypatch.setattr(
+            scratchpad_module.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        pad = Scratchpad(name="telemetry-fail", _workspace_path=tmp_path)
+        monkeypatch.setattr(pad, "_ensure_venv", lambda: None)
+        monkeypatch.setattr(pad, "_find_uv", lambda: None)
+        pad._venv_python = sys.executable
+
+        result = await pad.install_packages(["bogus"], source="exec.packages")
+
+        assert "Install failed" in result
+        assert (
+            "install_failure",
+            {
+                "package": "bogus",
+                "scratchpad": "telemetry-fail",
+                "source": "exec.packages",
+                "status": "exit_1",
+                "error": "boom",
+                "workspace_path": tmp_path,
+            },
+        ) in events
 
 
 class TestProgressAndTimeouts:

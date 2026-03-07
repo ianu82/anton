@@ -12,6 +12,8 @@ import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from anton.runtime import log_package_event
+
 _CELL_TIMEOUT_DEFAULT = 120        # Default total timeout when no estimate given
 _CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before killing
 _CELL_INACTIVITY_AFTER_PROGRESS = 60  # Grace window after a progress() call
@@ -65,6 +67,7 @@ class Scratchpad:
     _venv_dir: str | None = field(default=None, repr=False)
     _venv_python: str | None = field(default=None, repr=False)
     _installed_packages: set[str] = field(default_factory=set, repr=False)
+    _workspace_path: Path | None = field(default=None, repr=False)
     _venvs_base: Path = field(
         default_factory=lambda: Path("~/.anton/scratchpad-venvs").expanduser(),
         repr=False,
@@ -337,6 +340,9 @@ class Scratchpad:
             env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
         if self._coding_provider:
             env["ANTON_SCRATCHPAD_PROVIDER"] = self._coding_provider
+        env["ANTON_SCRATCHPAD_NAME"] = self.name
+        if self._workspace_path is not None:
+            env["ANTON_WORKSPACE_PATH"] = str(self._workspace_path)
         # Ensure the SDKs can find API keys under their expected names.
         # Anton stores them as ANTON_*_API_KEY; the SDKs expect *_API_KEY.
         if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
@@ -801,7 +807,7 @@ class Scratchpad:
             self._venv_dir = None
             self._venv_python = None
 
-    async def install_packages(self, packages: list[str]) -> str:
+    async def install_packages(self, packages: list[str], *, source: str = "scratchpad.install") -> str:
         """Install packages into the scratchpad's venv via pip (or uv pip)."""
         if not packages:
             return "No packages specified."
@@ -817,6 +823,16 @@ class Scratchpad:
         else:
             cmd = [self._venv_python, "-m", "pip", "install", "--no-input", *needed]
 
+        for package in needed:
+            log_package_event(
+                "explicit_install",
+                package=package,
+                scratchpad=self.name,
+                source=source,
+                status="started",
+                workspace_path=self._workspace_path,
+            )
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -827,9 +843,29 @@ class Scratchpad:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            for package in needed:
+                log_package_event(
+                    "install_failure",
+                    package=package,
+                    scratchpad=self.name,
+                    source=source,
+                    status="timed_out",
+                    error=f"Install timed out after {_INSTALL_TIMEOUT}s.",
+                    workspace_path=self._workspace_path,
+                )
             return f"Install timed out after {_INSTALL_TIMEOUT}s."
         output = stdout.decode()
         if proc.returncode != 0:
+            for package in needed:
+                log_package_event(
+                    "install_failure",
+                    package=package,
+                    scratchpad=self.name,
+                    source=source,
+                    status=f"exit_{proc.returncode}",
+                    error=output,
+                    workspace_path=self._workspace_path,
+                )
             return f"Install failed (exit {proc.returncode}):\n{output}"
         # Track successfully installed packages
         for p in needed:
@@ -851,6 +887,7 @@ class ScratchpadManager:
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
+        self._workspace_path = workspace_path
         if workspace_path is not None:
             self._venvs_base = workspace_path / ".anton" / "scratchpad-venvs"
         else:
@@ -872,6 +909,7 @@ class ScratchpadManager:
                 _coding_provider=self._coding_provider,
                 _coding_model=self._coding_model,
                 _coding_api_key=self._coding_api_key,
+                _workspace_path=self._workspace_path,
                 _venvs_base=self._venvs_base,
             )
             await pad.start()

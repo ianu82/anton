@@ -40,6 +40,8 @@ any other information that might be useful. Give me a complete dashboard.
 What happens next is the interesting part. Anton doesn't have any particular skill to begin with. It figures it out live: scrapes live prices, writes scratchpad code on the fly, crunches the numbers, and builds you a full dashboard — all in one conversation, with no setup.
 That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result.
 
+Anton’s scratchpad runs as a local Python subprocess with your normal user privileges. It is convenient and persistent, but it is not a security sandbox.
+
 <img width="800"  alt="image" src="https://github.com/user-attachments/assets/39ec8b3b-65e8-4e23-8861-c649969d4e1c" />
 
 
@@ -59,7 +61,7 @@ When you run `anton` in a directory, it checks for an `.anton` folder. If the fo
 
 **.anton/anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
 
-**Secret vault** — When Anton needs an API key or token, it asks you directly and stores the value in `.anton/.env`. The secret never passes through the LLM — Anton just gets told "the variable is set."
+**Secret vault** — When Anton needs an API key or token, it asks you directly and stores the value in `.anton/.env`. The secret is stored locally instead of being echoed into the chat transcript. In Anton’s current scratchpad model, code running in the scratchpad may still be able to read environment variables from `os.environ`.
 
 All data lives in `.anton/` in the current working directory. Override with `anton --folder /path`.
 
