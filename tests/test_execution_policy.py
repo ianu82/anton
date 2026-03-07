@@ -32,6 +32,8 @@ class TestScratchpadExecutionPolicy:
         assert env["OPENAI_API_KEY"] == "openai-key"
         assert env["OPENAI_BASE_URL"] == "https://example.test/v1"
         assert env["ANTON_MINDS_API_KEY"] == "minds-key"
+        assert env["ANTON_SCRATCHPAD_MODEL"] == "claude-test"
+        assert env["ANTON_SCRATCHPAD_PROVIDER"] == "anthropic"
         assert env["ANTON_RUNTIME_PROFILE"] == "base"
         assert env["ANTON_SCRATCHPAD_NAME"] == "main"
 
@@ -63,6 +65,8 @@ class TestScratchpadExecutionPolicy:
         assert "CUSTOM_ENV" not in env
         assert "ANTON_ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTON_SCRATCHPAD_MODEL" not in env
+        assert "ANTON_SCRATCHPAD_PROVIDER" not in env
 
     def test_restricted_modes_reject_generic_installs(self):
         policy = ScratchpadExecutionPolicy(mode=ExecutionMode.READ_ONLY)
@@ -73,6 +77,13 @@ class TestScratchpadExecutionPolicy:
             packages=["cowsay"],
         )
 
+    def test_restricted_modes_report_secret_backed_helpers_unavailable(self):
+        policy = ScratchpadExecutionPolicy(mode=ExecutionMode.READ_ONLY)
+
+        assert policy.llm_helpers_available() is False
+        assert policy.minds_query_available() is False
+        assert "unavailable in this execution mode" in policy.helper_prompt_note()
+
 
 class TestScratchpadManagerPolicy:
     def test_manager_exposes_policy_note(self):
@@ -80,3 +91,4 @@ class TestScratchpadManagerPolicy:
 
         assert manager.execution_mode is ExecutionMode.WORKSPACE_WRITE
         assert "workspace_write" in manager.policy_prompt_note()
+        assert "get_llm()" in manager.helper_prompt_note()

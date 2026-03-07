@@ -18,7 +18,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
-from anton.execution_policy import ExecutionMode
+from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     ContextOverflowError,
@@ -194,6 +194,9 @@ class ChatSession:
         scratchpad_tool = dict(SCRATCHPAD_TOOL)
         scratchpad_tool["description"] += (
             f"\n\nExecution policy: {self._scratchpads.policy_prompt_note()}"
+        )
+        scratchpad_tool["description"] += (
+            f"\n\nHelper capabilities: {self._scratchpads.helper_prompt_note()}"
         )
         pkg_list = self._scratchpads.available_packages()
         if pkg_list:
@@ -746,6 +749,7 @@ def _apply_error_tracking(
 
 def _build_runtime_context(settings: AntonSettings) -> str:
     """Build runtime context string including Minds datasource info if configured."""
+    policy = ScratchpadExecutionPolicy(mode=settings.execution_mode)
     ctx = (
         f"- Provider: {settings.planning_provider}\n"
         f"- Planning model: {settings.planning_model}\n"
@@ -758,17 +762,28 @@ def _build_runtime_context(settings: AntonSettings) -> str:
     _ds_key = getattr(settings, "minds_api_key", None)
     if _ds and _ds_key:
         engine = getattr(settings, "minds_datasource_engine", None) or "unknown"
-        ctx += (
-            f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
-            f"- Datasource: {_ds}\n"
-            f"- Engine: {engine}\n"
-            f"- To query data, use the scratchpad with the built-in `query_minds_data()` function.\n"
-            f"  It is pre-loaded in the scratchpad namespace — DO NOT import it. Just call it directly.\n"
-            f'  Example: result = query_minds_data("SELECT * FROM users LIMIT 5")\n'
-            f"  Returns dict with 'type', 'data' (list of rows), 'column_names', 'error_message'.\n"
-            f'  Optional: query_minds_data("SELECT ...", datasource="other_ds")\n'
-            f"- Write SQL appropriate for the {engine} engine."
-        )
+        if policy.minds_query_available():
+            ctx += (
+                f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
+                f"- Datasource: {_ds}\n"
+                f"- Engine: {engine}\n"
+                f"- To query data, use the scratchpad with the built-in `query_minds_data()` function.\n"
+                f"  It is pre-loaded in the scratchpad namespace — DO NOT import it. Just call it directly.\n"
+                f'  Example: result = query_minds_data("SELECT * FROM users LIMIT 5")\n'
+                f"  Returns dict with 'type', 'data' (list of rows), 'column_names', 'error_message'.\n"
+                f'  Optional: query_minds_data("SELECT ...", datasource="other_ds")\n'
+                f"- Write SQL appropriate for the {engine} engine."
+            )
+        else:
+            ctx += (
+                f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
+                f"- Datasource: {_ds}\n"
+                f"- Engine: {engine}\n"
+                f"- Built-in `query_minds_data()` access is unavailable in execution mode "
+                f"`{settings.execution_mode.value}` because Anton does not pass the required "
+                f"Minds credentials into restricted scratchpads.\n"
+                f"- Do not plan around that helper unless Anton explicitly grants it."
+            )
     return ctx
 
 

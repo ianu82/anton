@@ -57,14 +57,19 @@ across resets for that scratchpad.
 scratchpad tool instead of guessing or doing it in your head.
 - Variables, imports, and data persist across cells — like a notebook you drive \
 programmatically. Use this for both quick one-off calculations and multi-step analysis.
-- get_llm() returns a pre-configured LLM client — use llm.complete(system=..., messages=[...]) \
-for AI-powered computation within scratchpad code. The call is synchronous.
-- llm.generate_object(MyModel, system=..., messages=[...]) extracts structured data into \
-Pydantic models. Define a class with BaseModel, and the LLM fills it. Supports list[Model] too.
-- agentic_loop(system=..., user_message=..., tools=[...], handle_tool=fn) runs an LLM \
+- If Anton reports that `get_llm()` is available in this session, it returns a pre-configured \
+LLM client — use llm.complete(system=..., messages=[...]) for AI-powered computation within \
+scratchpad code. The call is synchronous.
+- If available, llm.generate_object(MyModel, system=..., messages=[...]) extracts structured \
+data into Pydantic models. Define a class with BaseModel, and the LLM fills it. Supports \
+list[Model] too.
+- If Anton reports that `agentic_loop()` is available in this session, it runs an LLM \
 tool-call loop inside scratchpad code. The LLM reasons and calls your tools iteratively. \
 handle_tool(name, inputs) is a plain sync function returning a string result. Use this for \
 multi-step AI workflows like classification, extraction, or analysis with structured outputs.
+- Built-in secret-backed helpers such as `get_llm()`, `agentic_loop()`, and \
+`query_minds_data()` are mode-dependent. In restricted execution modes, do not assume they \
+exist unless Anton explicitly says they are available.
 - Environment variables loaded into Anton's process, including some values from local or \
 global `.anton/.env` files, may be available as environment variables (os.environ). \
 Treat them as secrets and do not print them unless the task truly requires it.

@@ -786,6 +786,9 @@ class ScratchpadManager:
     def policy_prompt_note(self) -> str:
         return self._execution_policy.prompt_note()
 
+    def helper_prompt_note(self) -> str:
+        return self._execution_policy.helper_prompt_note()
+
     @staticmethod
     def probe_packages() -> list[str]:
         """Return sorted package names from Anton's default managed runtime profile."""

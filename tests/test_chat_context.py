@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from anton.chat import ChatSession
+from anton.chat import ChatSession, _build_runtime_context
+from anton.config.settings import AntonSettings
 from anton.tools import MEMORIZE_TOOL
 from anton.context.self_awareness import SelfAwarenessContext
+from anton.execution_policy import ExecutionMode
 from anton.llm.provider import LLMResponse, ToolCall, Usage
 from anton.workspace import Workspace
 from anton.memory.cortex import Cortex
@@ -311,3 +313,55 @@ class TestRuntimeContext:
         assert "not a security sandbox" in description
         assert "may be available in os.environ" in description
         assert "Execution policy:" in description
+
+    async def test_read_only_system_prompt_reports_helpers_unavailable(self):
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
+
+        session = ChatSession(
+            mock_llm,
+            runtime_context="",
+            execution_mode=ExecutionMode.READ_ONLY,
+        )
+        await session.turn("hi")
+
+        call_kwargs = mock_llm.plan.call_args
+        system_prompt = call_kwargs.kwargs.get("system", "")
+        assert "get_llm()" in system_prompt
+        assert "unavailable in this execution mode" in system_prompt
+
+    def test_read_only_tool_description_reports_helpers_unavailable(self):
+        session = ChatSession(AsyncMock(), runtime_context="", execution_mode=ExecutionMode.READ_ONLY)
+        scratchpad_tool = next(tool for tool in session._build_tools() if tool["name"] == "scratchpad")
+        description = scratchpad_tool["description"]
+        assert "Helper capabilities:" in description
+        assert "query_minds_data()" in description
+        assert "unavailable in this execution mode" in description
+
+    def test_runtime_context_hides_query_minds_data_in_read_only(self):
+        settings = AntonSettings(
+            minds_api_key="minds-key",
+            minds_datasource="warehouse",
+            minds_datasource_engine="postgres",
+            execution_mode=ExecutionMode.READ_ONLY,
+        )
+
+        context = _build_runtime_context(settings)
+
+        assert "CONNECTED DATASOURCE" in context
+        assert "query_minds_data()" in context
+        assert "unavailable in execution mode `read_only`" in context
+        assert "pre-loaded in the scratchpad namespace" not in context
+
+    def test_runtime_context_keeps_query_minds_data_in_full_trust(self):
+        settings = AntonSettings(
+            minds_api_key="minds-key",
+            minds_datasource="warehouse",
+            minds_datasource_engine="postgres",
+            execution_mode=ExecutionMode.FULL_TRUST,
+        )
+
+        context = _build_runtime_context(settings)
+
+        assert "query_minds_data()" in context
+        assert "pre-loaded in the scratchpad namespace" in context
