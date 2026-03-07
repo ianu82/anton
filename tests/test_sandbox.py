@@ -20,6 +20,32 @@ class TestSandboxSupport:
         with pytest.raises(RuntimeError, match="not supported on Windows"):
             ensure_execution_mode_supported(ExecutionMode.READ_ONLY)
 
+    def test_windows_launch_spec_uses_launcher_module(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_module, "ensure_execution_mode_supported", lambda mode: ExecutionMode.coerce(mode))
+
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        runtime = tmp_path / "runtime"
+        workspace.mkdir()
+        overlay.mkdir()
+        runtime.mkdir()
+
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable=str(overlay / "Scripts" / "python.exe"),
+            args=["script.py"],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+            runtime_path=runtime,
+            anton_root=tmp_path / "repo",
+            python_roots=[tmp_path / "python-home"],
+            extra_write_paths=[tmp_path / "boot"],
+        )
+
+        assert spec.runner == "windows_read_only"
+        assert spec.argv[1:3] == ("-m", "anton.windows_launcher")
+
     def test_darwin_launch_contains_network_deny(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sandbox_module.sys, "platform", "darwin")
         monkeypatch.setattr(sandbox_module, "_find_sandbox_exec", lambda: "/usr/bin/sandbox-exec")

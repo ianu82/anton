@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from anton.execution_policy import ExecutionMode
+from anton.windows_sandbox import WindowsSandboxConfig, windows_launcher_command
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,36 @@ def _linux_bwrap_argv(
     return argv
 
 
+def _windows_launch_spec(
+    mode: ExecutionMode,
+    *,
+    executable: str,
+    args: list[str],
+    workspace_path: Path,
+    overlay_dir: Path,
+    runtime_path: Path | None = None,
+    anton_root: Path | None = None,
+    python_roots: list[Path] | None = None,
+    extra_write_paths: list[Path] | None = None,
+) -> SandboxLaunchSpec:
+    config = WindowsSandboxConfig.build(
+        mode=mode,
+        executable=executable,
+        args=args,
+        workspace_path=workspace_path,
+        overlay_dir=overlay_dir,
+        runtime_path=runtime_path,
+        anton_root=anton_root,
+        python_roots=python_roots,
+        extra_write_paths=extra_write_paths,
+    )
+    return SandboxLaunchSpec(
+        argv=windows_launcher_command(config),
+        runner=f"windows_{mode.value}",
+        profile_text=config.to_base64(),
+    )
+
+
 def build_sandbox_launch(
     mode: ExecutionMode | str,
     *,
@@ -158,6 +189,8 @@ def build_sandbox_launch(
     workspace_path: Path | None,
     overlay_dir: Path,
     runtime_path: Path | None = None,
+    anton_root: Path | None = None,
+    python_roots: list[Path] | None = None,
     extra_write_paths: list[Path] | None = None,
 ) -> SandboxLaunchSpec:
     resolved = ensure_execution_mode_supported(mode)
@@ -171,6 +204,19 @@ def build_sandbox_launch(
     extra_paths = [_resolve_path(path) for path in (extra_write_paths or [])]
     if resolved is ExecutionMode.WORKSPACE_WRITE:
         _assert_workspace_write_safe(workspace)
+
+    if sys.platform == "win32":
+        return _windows_launch_spec(
+            resolved,
+            executable=executable,
+            args=args,
+            workspace_path=workspace,
+            overlay_dir=overlay,
+            runtime_path=runtime_path,
+            anton_root=anton_root,
+            python_roots=python_roots,
+            extra_write_paths=extra_paths,
+        )
 
     if sys.platform == "darwin":
         profile = _darwin_profile(
