@@ -26,6 +26,7 @@ class _ToolActivity:
 
 
 _TOOL_LABELS: dict[str, str] = {
+    "patch": "Patch",
     "scratchpad": "Scratchpad",
     "memorize": "Memory",
     "recall": "Recall",
@@ -45,6 +46,9 @@ def _tool_display_text(name: str, input_json: str) -> str:
     desc = ""
     if name == "scratchpad":
         desc = data.get("one_line_description") or data.get("action", "")
+    elif name == "patch":
+        edits = data.get("edits", [])
+        desc = f"{len(edits)} edit(s)"
     elif name == "memorize":
         entries = data.get("entries", [])
         desc = f"{len(entries)} entry/entries"
