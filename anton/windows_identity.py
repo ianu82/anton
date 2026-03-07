@@ -113,11 +113,12 @@ def appcontainer_name_for_mode(mode: ExecutionMode | str) -> str:
 
 
 def _check_hresult(hr: int, *, allow_already_exists: bool = False) -> None:
-    if hr == 0:
+    normalized = hr & 0xFFFFFFFF
+    if normalized == 0:
         return
-    if allow_already_exists and hr == ERROR_ALREADY_EXISTS_HRESULT:
+    if allow_already_exists and normalized == ERROR_ALREADY_EXISTS_HRESULT:
         return
-    raise RuntimeError(f"Windows AppContainer call failed with HRESULT 0x{hr:08x}.")
+    raise RuntimeError(f"Windows AppContainer call failed with HRESULT 0x{normalized:08x}.")
 
 
 def _sid_to_string(sid_ptr: int) -> str:
