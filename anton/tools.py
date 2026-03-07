@@ -164,6 +164,9 @@ SCRATCHPAD_TOOL = {
         "another managed runtime such as `ml` or `browser`. "
         "Include a 'packages' array on exec calls for explicit overlay installs when you "
         "need a package outside the selected managed profile.\n"
+        "Capability availability depends on Anton's execution policy. If a package install, "
+        "secret, or helper is unavailable, adapt to policy feedback rather than assuming "
+        "full machine access.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
         "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
         "llm.generate_object(MyModel, system=..., messages=[...]) extracts structured "
@@ -313,12 +316,14 @@ async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
     code = tc_input.get("code", "")
     if not code or not code.strip():
         return "No code provided."
+    packages = tc_input.get("packages", [])
+    rejection = session._scratchpads.authorize_action("exec", packages=packages)
+    if rejection is not None:
+        return rejection
 
     profile = str(tc_input.get("profile", "")).strip() or "base"
     pad = await session._scratchpads.get_or_create(name, profile=profile)
 
-    # Auto-install packages before running the cell
-    packages = tc_input.get("packages", [])
     if packages:
         install_result = await pad.install_packages(packages, source="exec.packages")
         if "Install failed" in install_result or "timed out" in install_result:
@@ -381,6 +386,13 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
 
     if not name:
         return "Scratchpad name is required."
+
+    rejection = session._scratchpads.authorize_action(
+        action,
+        packages=tc_input.get("packages", []) if action == "install" else None,
+    )
+    if rejection is not None:
+        return rejection
 
     if action == "exec":
         result = await prepare_scratchpad_exec(session, tc_input)

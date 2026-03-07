@@ -298,6 +298,8 @@ class TestRuntimeContext:
         system_prompt = call_kwargs.kwargs.get("system", "")
         assert "local Python subprocess" in system_prompt
         assert "not a security sandbox" in system_prompt
+        assert "Execution Policy" in system_prompt
+        assert "full_trust" in system_prompt
 
     def test_scratchpad_tool_description_warns_about_privileges(self):
         """Tool description should explain the current trust model honestly."""
@@ -306,3 +308,4 @@ class TestRuntimeContext:
         description = scratchpad_tool["description"]
         assert "not a security sandbox" in description
         assert "may be available in os.environ" in description
+        assert "Execution policy:" in description
