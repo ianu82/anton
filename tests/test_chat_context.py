@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import urllib.error
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +12,9 @@ from anton.chat import (
     ChatSession,
     _build_runtime_context,
     _chat_execution_mode_line,
+    _describe_minds_connection_error,
     _handle_setup_execution_mode,
+    _handle_setup_minds,
 )
 from anton.config.settings import AntonSettings
 from anton.tools import MEMORIZE_TOOL
@@ -462,3 +466,140 @@ class TestExecutionModeSetup:
         restart_mock.assert_not_awaited()
         printed = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
         assert "Current chat already uses this mode." in printed
+
+
+class TestMindsSetupRecovery:
+    def test_describe_minds_http_401_is_factual(self):
+        error = urllib.error.HTTPError(
+            "https://mdb.ai/api/v1/datasources/",
+            401,
+            "Unauthorized",
+            None,
+            None,
+        )
+
+        headline, advice = _describe_minds_connection_error(error)
+
+        assert headline == "Connection failed (HTTP 401: Unauthorized). The server rejected the request."
+        assert "invalid or expired credentials" in advice
+
+    def test_describe_minds_timeout_is_factual(self):
+        error = urllib.error.URLError(socket.timeout("timed out"))
+
+        headline, advice = _describe_minds_connection_error(error)
+
+        assert headline == "Connection failed because the request timed out."
+        assert "server is slow or unavailable" in advice
+
+    async def test_setup_minds_can_reconfigure_api_key_after_auth_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        prompts = iter(["mdb.ai", "1", "new-key", "1"])
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *args, **kwargs: next(prompts))
+
+        calls: list[tuple[str, str, bool]] = []
+
+        def fake_list(base_url: str, api_key: str, verify: bool = True):
+            calls.append((base_url, api_key, verify))
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(
+                    f"{base_url}/api/v1/datasources/",
+                    401,
+                    "Unauthorized",
+                    None,
+                    None,
+                )
+            return [{"name": "warehouse", "engine": "postgres"}]
+
+        monkeypatch.setattr("anton.chat._minds_list_datasources", fake_list)
+        rebuilt = object()
+        monkeypatch.setattr("anton.chat._rebuild_session", lambda **kwargs: rebuilt)
+
+        workspace_base = tmp_path / "workspace"
+        workspace_base.mkdir()
+        workspace = Workspace(workspace_base)
+        workspace.initialize()
+        settings = AntonSettings(minds_api_key="old-key", _env_file=None)
+        console = MagicMock()
+
+        result = await _handle_setup_minds(
+            console,
+            settings,
+            workspace,
+            state={},
+            self_awareness=None,
+            cortex=None,
+            session=object(),
+        )
+
+        assert result is rebuilt
+        assert calls == [
+            ("https://mdb.ai", "old-key", True),
+            ("https://mdb.ai", "new-key", True),
+        ]
+        assert settings.minds_api_key == "new-key"
+        assert "ANTON_MINDS_API_KEY=new-key" in (home / ".anton" / ".env").read_text()
+        printed = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+        assert "The server rejected the request." in printed
+        assert "Common reasons: invalid or expired credentials" in printed
+        assert "Recovery options:" in printed
+        assert "certificate issue" not in printed
+
+    async def test_setup_minds_can_retry_without_ssl_verification_after_timeout(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        prompts = iter(["https://terabase.dev.mdb.ai", "2", "1"])
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *args, **kwargs: next(prompts))
+
+        calls: list[tuple[str, str, bool]] = []
+
+        def fake_list(base_url: str, api_key: str, verify: bool = True):
+            calls.append((base_url, api_key, verify))
+            if len(calls) == 1:
+                raise urllib.error.URLError(socket.timeout("timed out"))
+            return [{"name": "warehouse", "engine": "postgres"}]
+
+        monkeypatch.setattr("anton.chat._minds_list_datasources", fake_list)
+        rebuilt = object()
+        monkeypatch.setattr("anton.chat._rebuild_session", lambda **kwargs: rebuilt)
+
+        workspace_base = tmp_path / "workspace"
+        workspace_base.mkdir()
+        workspace = Workspace(workspace_base)
+        workspace.initialize()
+        settings = AntonSettings(minds_api_key="minds-key", _env_file=None)
+        console = MagicMock()
+
+        result = await _handle_setup_minds(
+            console,
+            settings,
+            workspace,
+            state={},
+            self_awareness=None,
+            cortex=None,
+            session=object(),
+        )
+
+        assert result is rebuilt
+        assert calls == [
+            ("https://terabase.dev.mdb.ai", "minds-key", True),
+            ("https://terabase.dev.mdb.ai", "minds-key", False),
+        ]
+        assert settings.minds_ssl_verify is False
+        assert "ANTON_MINDS_SSL_VERIFY=false" in (home / ".anton" / ".env").read_text()
+        printed = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+        assert "Connection failed because the request timed out." in printed
+        assert "server is slow or unavailable" in printed
+        assert "Recovery options:" in printed
