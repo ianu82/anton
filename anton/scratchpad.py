@@ -299,6 +299,8 @@ class Scratchpad:
             workspace_path=self._workspace_path,
             overlay_dir=Path(self._venv_dir),
             runtime_path=self._runtime_path,
+            anton_root=Path(__file__).resolve().parent.parent,
+            python_roots=[Path(sys.base_prefix)],
             extra_write_paths=[Path(path).resolve().parent],
         )
 
