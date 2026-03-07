@@ -36,6 +36,28 @@ class TestSandboxSupport:
 
         assert spec.runner == "windows_read_only"
 
+    def test_safe_modes_ignore_workspace_local_scratchpad_venvs_in_guard(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_module, "ensure_execution_mode_supported", lambda mode: ExecutionMode.coerce(mode))
+
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        workspace.mkdir()
+        overlay.mkdir()
+        local_venv_bin = workspace / ".anton" / "scratchpad-venvs" / "legacy" / "bin"
+        local_venv_bin.mkdir(parents=True)
+        (local_venv_bin / "python3").symlink_to(sys.executable)
+
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable=str(overlay / "Scripts" / "python.exe"),
+            args=["script.py"],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+
+        assert spec.runner == "windows_read_only"
+
     def test_windows_supports_safe_modes(self, monkeypatch):
         monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
         assert ensure_execution_mode_supported(ExecutionMode.READ_ONLY) is ExecutionMode.READ_ONLY
