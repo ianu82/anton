@@ -70,6 +70,26 @@ class ScratchpadExecutionPolicy:
             )
         return None
 
+    def llm_helpers_available(self) -> bool:
+        return self.mode is ExecutionMode.FULL_TRUST
+
+    def minds_query_available(self) -> bool:
+        return self.mode is ExecutionMode.FULL_TRUST
+
+    def helper_prompt_note(self) -> str:
+        if self.mode is ExecutionMode.FULL_TRUST:
+            return (
+                "Secret-backed scratchpad helpers can be available in this session. "
+                "`get_llm()` and `agentic_loop()` are available when Anton has a coding model "
+                "configured for the scratchpad, and `query_minds_data()` is available when a "
+                "Minds datasource is configured."
+            )
+        return (
+            "Secret-backed scratchpad helpers like `get_llm()`, `agentic_loop()`, and "
+            "`query_minds_data()` are unavailable in this execution mode unless Anton "
+            "explicitly grants them."
+        )
+
     def build_subprocess_env(
         self,
         *,
@@ -99,10 +119,11 @@ class ScratchpadExecutionPolicy:
             env.update(self.granted_env)
             env["PYTHONDONTWRITEBYTECODE"] = "1"
 
-        if coding_model:
-            env["ANTON_SCRATCHPAD_MODEL"] = coding_model
-        if coding_provider:
-            env["ANTON_SCRATCHPAD_PROVIDER"] = coding_provider
+        if self.llm_helpers_available():
+            if coding_model:
+                env["ANTON_SCRATCHPAD_MODEL"] = coding_model
+            if coding_provider:
+                env["ANTON_SCRATCHPAD_PROVIDER"] = coding_provider
         env["ANTON_RUNTIME_PROFILE"] = runtime_profile
         env["ANTON_SCRATCHPAD_NAME"] = scratchpad_name
         env["ANTON_EXECUTION_MODE_INTERNAL"] = self.mode.value
@@ -141,7 +162,8 @@ class ScratchpadExecutionPolicy:
         if self.mode is ExecutionMode.FULL_TRUST:
             return (
                 "Execution mode is full_trust. Scratchpads inherit Anton's normal local process "
-                "privileges and broad ambient environment access."
+                "privileges and broad ambient environment access. "
+                + self.helper_prompt_note()
             )
         workspace_access = (
             "workspace read/write access"
@@ -151,5 +173,6 @@ class ScratchpadExecutionPolicy:
         return (
             f"Execution mode is {self.mode.value}. Scratchpads run with {workspace_access}, "
             "no network, no ambient secrets, and no generic package installs. Adapt to policy "
-            "feedback instead of assuming full machine access."
+            "feedback instead of assuming full machine access. "
+            + self.helper_prompt_note()
         )
