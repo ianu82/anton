@@ -157,7 +157,9 @@ SCRATCHPAD_TOOL = {
         "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n"
         "- install: Install Python packages into the scratchpad's environment. "
         "Packages persist across resets.\n\n"
-        "Use print() to produce output. Host Python packages are available by default. "
+        "Use print() to produce output. The scratchpad runs as a local Python subprocess "
+        "with Anton's normal process privileges, not a security sandbox. "
+        "Host Python packages may be available by default. "
         "Include a 'packages' array on exec calls for any libraries your code needs — "
         "they'll be auto-installed before the cell runs (already-installed ones are skipped).\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
@@ -170,7 +172,9 @@ SCRATCHPAD_TOOL = {
         "sample(var) inspects any variable with type-aware formatting — DataFrames get "
         "shape/dtypes/head, dicts get keys/values, lists get length/items. "
         "Defaults to 'preview' mode (compact); use sample(var, mode='full') for complete dump.\n"
-        "All .anton/.env secrets are available as environment variables (os.environ).\n\n"
+        "Environment variables loaded into Anton's process, including values from local "
+        "or global `.anton/.env` files, may be available in os.environ. Treat them as "
+        "privileged data.\n\n"
         "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
         "no output and no progress() calls for 30s, it is killed and all state is lost. "
         "For long-running code (API calls, data extraction, heavy computation), call "
@@ -309,7 +313,7 @@ async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
     # Auto-install packages before running the cell
     packages = tc_input.get("packages", [])
     if packages:
-        install_result = await pad.install_packages(packages)
+        install_result = await pad.install_packages(packages, source="exec.packages")
         if "Install failed" in install_result or "timed out" in install_result:
             return install_result
 

@@ -16,7 +16,7 @@ The current implementation has three blocks:
 | Brain Region                 | Function                                         | Anton Equivalent                                              |
 |------------------------------|--------------------------------------------------|---------------------------------------------------------------|
 | Prefrontal Cortex (PFC)      | Executive control, planning, the "inner voice"  | Orchestrator — decides what to work on, how, and when to stop |
-| Working Memory (dlPFC)       | Temporary reasoning space, ~4 slots             | Scratchpads — isolated reasoning environments                 |
+| Working Memory (dlPFC)       | Temporary reasoning space, ~4 slots             | Scratchpads — persistent local reasoning environments         |
 | Hippocampus                  | Episodic memory, records experiences            | Experience Store — logs of problem + context + solution       |
 
 
@@ -43,7 +43,7 @@ These three parts work in a very simple way:
   │              SCRATCHPADS (working memory)            │
   │                                                      │
   │  Each scratchpad is:                                 │
-  │  - An isolated reasoning environment (its own venv)  │
+  │  - A persistent local Python environment (its own venv, not a sandbox) │
   │  - A chain-of-thought trace (code + observations)    │
   │  - Has a goal, constraints, and a budget             │
   │  - Can request sub-scratchpads (decomposition)       │

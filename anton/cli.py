@@ -134,6 +134,8 @@ app = typer.Typer(
     name="anton",
     help="Anton — a self-evolving autonomous system",
 )
+runtime_app = typer.Typer(help="Inspect Anton runtime state.")
+app.add_typer(runtime_app, name="runtime")
 
 
 def _make_console() -> Console:
@@ -373,3 +375,41 @@ def list_learnings(ctx: typer.Context) -> None:
 def version() -> None:
     """Show Anton version."""
     console.print(f"Anton v{__version__}")
+
+
+@runtime_app.command("stats")
+def runtime_stats() -> None:
+    """Summarize local scratchpad package telemetry."""
+    from anton.runtime import load_package_events, summarize_package_events
+
+    events = load_package_events()
+    if not events:
+        console.print("[dim]No package telemetry recorded yet.[/]")
+        return
+
+    summary = summarize_package_events(events)
+    console.print("[bold]Package telemetry:[/]")
+    console.print(f"Total events: {summary.total_events}")
+
+    if summary.event_counts:
+        event_table = Table(title="Event counts")
+        event_table.add_column("Event", style="anton.cyan")
+        event_table.add_column("Count", justify="right")
+        for event_name, count in summary.event_counts:
+            event_table.add_row(event_name, str(count))
+        console.print(event_table)
+
+    if summary.package_rows:
+        package_table = Table(title="Packages")
+        package_table.add_column("Package", style="anton.cyan")
+        package_table.add_column("Events", justify="right")
+        package_table.add_column("Failures", justify="right")
+        package_table.add_column("Workspaces", justify="right")
+        for row in summary.package_rows[:20]:
+            package_table.add_row(
+                row.name,
+                str(row.events),
+                str(row.failures),
+                str(row.workspaces),
+            )
+        console.print(package_table)
