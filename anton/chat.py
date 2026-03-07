@@ -1396,6 +1396,95 @@ def _normalize_minds_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _mask_secret(value: str, *, keep: int = 4) -> str:
+    if len(value) <= keep * 2:
+        return "*" * max(len(value), 3)
+    return f"{value[:keep]}...{value[-keep:]}"
+
+
+def _prompt_minds_api_key(
+    console: Console,
+    *,
+    current_key: str,
+    allow_empty_keep: bool,
+) -> str | None:
+    from rich.prompt import Prompt
+
+    prompt = "Minds API key"
+    if current_key:
+        masked = _mask_secret(current_key)
+        if allow_empty_keep:
+            prompt += f" [dim](Enter to keep {masked})[/]"
+        else:
+            prompt += f" [dim](current: {masked}; Enter to cancel)[/]"
+
+    if current_key:
+        api_key = Prompt.ask(prompt, default="", console=console).strip()
+    else:
+        api_key = Prompt.ask(prompt, console=console).strip()
+    if api_key:
+        return api_key
+    if current_key and allow_empty_keep:
+        return current_key
+    return None
+
+
+def _describe_minds_connection_error(err: Exception) -> tuple[str, str]:
+    import socket
+    import ssl
+    import urllib.error
+
+    if isinstance(err, urllib.error.HTTPError):
+        reason = err.reason or "HTTP error"
+        if err.code in (401, 403):
+            return (
+                f"Connection failed (HTTP {err.code}: {reason}). The server rejected the request.",
+                "Common reasons: invalid or expired credentials, insufficient access, or the wrong server/endpoint.",
+            )
+        if 400 <= err.code < 500:
+            return (
+                f"Connection failed (HTTP {err.code}: {reason}). The server rejected the request.",
+                "Common reasons: wrong URL, malformed request, or access restrictions on that endpoint.",
+            )
+        if err.code >= 500:
+            return (
+                f"Connection failed (HTTP {err.code}: {reason}). The server returned an error.",
+                "Common reasons: server-side failure or a temporary outage.",
+            )
+        return (
+            f"Connection failed (HTTP {err.code}: {reason}).",
+            "Common reasons: a server response Anton could not use or a transient connectivity problem.",
+        )
+
+    if isinstance(err, urllib.error.URLError):
+        reason = getattr(err, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return (
+                "Connection failed during TLS certificate verification.",
+                "Common reasons: a self-signed, expired, or otherwise untrusted certificate.",
+            )
+        if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+            return (
+                "Connection failed because the request timed out.",
+                "Common reasons: the server is slow or unavailable, the URL is wrong, or there is a network path issue.",
+            )
+        return (
+            f"Connection failed ({err}).",
+            "Common reasons: network connectivity problems, DNS issues, or a server Anton could not reach.",
+        )
+
+    if "timed out" in str(err).lower():
+        return (
+            "Connection failed because the request timed out.",
+            "Common reasons: the server is slow or unavailable, the URL is wrong, or there is a network path issue.",
+        )
+
+    return (
+        f"Connection failed ({err}).",
+        "Common reasons: network connectivity problems, authentication issues, or a server-side failure.",
+    )
+
+
 def _minds_list_datasources(base_url: str, api_key: str, verify: bool = True) -> list[dict]:
     """Fetch datasource list from a Minds server using stdlib urllib."""
     import json as _json
@@ -1434,7 +1523,6 @@ async def _handle_setup_minds(
     episodic: EpisodicMemory | None = None,
 ) -> ChatSession:
     """Setup sub-menu: connect to a Minds datasource."""
-    import ssl
     import urllib.error
 
     from rich.prompt import Prompt
@@ -1450,12 +1538,15 @@ async def _handle_setup_minds(
     minds_url = _normalize_minds_url(getattr(settings, "minds_url", "https://mdb.ai"))
 
     if not api_key:
-        api_key = Prompt.ask("Minds API key", console=console)
-        if not api_key.strip():
+        api_key = _prompt_minds_api_key(
+            console,
+            current_key="",
+            allow_empty_keep=False,
+        )
+        if not api_key:
             console.print("[anton.error]No API key provided. Aborted.[/]")
             console.print()
             return session
-        api_key = api_key.strip()
 
     minds_url_input = Prompt.ask(
         "Minds URL",
@@ -1466,47 +1557,53 @@ async def _handle_setup_minds(
 
     # --- Test connection ---
     ssl_verify = getattr(settings, "minds_ssl_verify", True)
-    console.print()
-    console.print(f"[anton.muted]Connecting to {minds_url}...[/]")
-
     datasources = None
-    try:
-        datasources = _minds_list_datasources(minds_url, api_key, verify=ssl_verify)
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        is_ssl = isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError)
-        # On some platforms, invalid certs surface as HTTP errors instead of SSL errors.
-        is_https_error = not is_ssl and minds_url.startswith("https://") and ssl_verify
-        if is_ssl or is_https_error:
-            if is_ssl:
-                console.print("[anton.warning]This server uses a self-signed or untrusted certificate.[/]")
-            else:
-                console.print(f"[anton.warning]Connection failed ({e}). This may be a certificate issue.[/]")
-            trust = Prompt.ask(
-                "Retry without SSL verification? (y/n)",
-                choices=["y", "n"],
-                default="y",
-                console=console,
-            )
-            if trust == "y":
-                ssl_verify = False
-                try:
-                    datasources = _minds_list_datasources(minds_url, api_key, verify=False)
-                except Exception as retry_err:
-                    console.print(f"[anton.error]Connection failed: {retry_err}[/]")
-                    console.print()
-                    return session
-            else:
-                console.print("[anton.muted]Aborted.[/]")
-                console.print()
-                return session
-        else:
-            console.print(f"[anton.error]Connection failed: {e}[/]")
+    while datasources is None:
+        console.print()
+        console.print(f"[anton.muted]Connecting to {minds_url}...[/]")
+        try:
+            datasources = _minds_list_datasources(minds_url, api_key, verify=ssl_verify)
+            break
+        except (urllib.error.URLError, urllib.error.HTTPError) as err:
+            headline, advice = _describe_minds_connection_error(err)
+            console.print(f"[anton.error]{headline}[/]")
+            console.print(f"[anton.muted]{advice}[/]")
+        except Exception as err:
+            headline, advice = _describe_minds_connection_error(err)
+            console.print(f"[anton.error]{headline}[/]")
+            console.print(f"[anton.muted]{advice}[/]")
+
+        console.print()
+        console.print("  Recovery options:")
+        console.print("    [bold]1[/]  Reconfigure API key")
+        console.print("    [bold]2[/]  Retry without SSL verification")
+        console.print("    [bold]q[/]  Back")
+        console.print()
+
+        action = Prompt.ask(
+            "Select",
+            choices=["1", "2", "q"],
+            default="q",
+            console=console,
+        )
+        if action == "q":
+            console.print("[anton.muted]Aborted.[/]")
             console.print()
             return session
-    except Exception as e:
-        console.print(f"[anton.error]Connection failed: {e}[/]")
-        console.print()
-        return session
+        if action == "1":
+            new_key = _prompt_minds_api_key(
+                console,
+                current_key=api_key,
+                allow_empty_keep=False,
+            )
+            if new_key is None:
+                console.print("[anton.muted]API key unchanged.[/]")
+                continue
+            api_key = new_key
+            ssl_verify = getattr(settings, "minds_ssl_verify", True)
+            continue
+
+        ssl_verify = False
 
     if not datasources:
         console.print("[anton.warning]No datasources found on this server.[/]")
