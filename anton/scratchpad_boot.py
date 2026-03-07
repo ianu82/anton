@@ -565,84 +565,46 @@ while True:
     err_buf = io.StringIO()
     log_buf = io.StringIO()
     error = None
+    missing_import = None
     _cell_log_handler.buf = log_buf
 
     sys.stdout = out_buf
     sys.stderr = err_buf
-    _auto_installed = []
     try:
         compiled = compile(code, "<scratchpad>", "exec")
         exec(compiled, namespace)
     except ModuleNotFoundError as _mnf:
-        # Auto-install the missing module and retry the cell once
         _missing = _mnf.name
         if _missing:
+            try:
+                from anton.runtime import suggest_package_for_import
+
+                suggested_package, suggested_profile = suggest_package_for_import(_missing)
+            except Exception:
+                suggested_package, suggested_profile = _missing, None
             _log_package_event(
                 "missing_import",
-                package=_missing,
+                package=suggested_package,
+                profile=suggested_profile,
                 source="module_not_found",
                 status="raised",
             )
-            sys.stdout = _real_stdout
-            sys.stderr = sys.__stderr__
-            _cell_log_handler.buf = None
-            _real_stdout.write(_PROGRESS_MARKER + " " + f"Installing {_missing}..." + "\n")
-            _real_stdout.flush()
-            import subprocess as _sp
-            _uv_path = os.environ.get("ANTON_UV_PATH", "")
-            _log_package_event(
-                "legacy_auto_install",
-                package=_missing,
-                source="module_not_found",
-                status="started",
+            next_action = (
+                f"Retry with scratchpad profile '{suggested_profile}'."
+                if suggested_profile
+                else "Install the package explicitly with the scratchpad install action."
             )
-            if _uv_path:
-                _pip = _sp.run(
-                    [_uv_path, "pip", "install", "--python", sys.executable, _missing],
-                    capture_output=True, timeout=120,
-                )
-            else:
-                _pip = _sp.run(
-                    [sys.executable, "-m", "pip", "install", _missing],
-                    capture_output=True, timeout=120,
-                )
-            # Reset buffers and retry
-            out_buf = io.StringIO()
-            err_buf = io.StringIO()
-            log_buf = io.StringIO()
-            _cell_log_handler.buf = log_buf
-            sys.stdout = out_buf
-            sys.stderr = err_buf
-            if _pip.returncode == 0:
-                _log_package_event(
-                    "legacy_auto_install",
-                    package=_missing,
-                    source="module_not_found",
-                    status="success",
-                )
-                _auto_installed.append(_missing)
-                try:
-                    exec(compiled, namespace)
-                except Exception:
-                    error = traceback.format_exc()
-            else:
-                _log_package_event(
-                    "legacy_auto_install",
-                    package=_missing,
-                    source="module_not_found",
-                    status=f"exit_{_pip.returncode}",
-                )
-                _log_package_event(
-                    "install_failure",
-                    package=_missing,
-                    source="module_not_found",
-                    status=f"exit_{_pip.returncode}",
-                    error=_pip.stderr.decode() if _pip.stderr else _pip.stdout.decode(),
-                )
-                error = (
-                    f"ModuleNotFoundError: No module named '{_missing}'\n"
-                    f"Auto-install failed:\n{_pip.stderr.decode()}"
-                )
+            missing_import = {
+                "import_name": _missing,
+                "package": suggested_package,
+                "suggested_profile": suggested_profile or "",
+                "next_action": next_action,
+            }
+            error = (
+                f"ModuleNotFoundError: No module named '{_missing}'\n"
+                f"Managed runtime package suggestion: {suggested_package}\n"
+                f"Next action: {next_action}"
+            )
         else:
             error = traceback.format_exc()
     except Exception:
@@ -657,9 +619,8 @@ while True:
         "stderr": err_buf.getvalue(),
         "logs": log_buf.getvalue(),
         "error": error,
+        "missing_import": missing_import,
     }
-    if _auto_installed:
-        result["auto_installed"] = _auto_installed
     _real_stdout.write(_RESULT_START + "\n")
     _real_stdout.write(json.dumps(result) + "\n")
     _real_stdout.write(_RESULT_END + "\n")

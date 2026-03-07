@@ -187,7 +187,7 @@ class ChatSession:
 
     def _build_tools(self) -> list[dict]:
         scratchpad_tool = dict(SCRATCHPAD_TOOL)
-        pkg_list = self._scratchpads._available_packages
+        pkg_list = self._scratchpads.available_packages()
         if pkg_list:
             notable = sorted(
                 p for p in pkg_list
@@ -195,9 +195,15 @@ class ChatSession:
             )
             if notable:
                 pkg_line = ", ".join(notable)
-                extra = f"\n\nInstalled packages ({len(pkg_list)} total, notable: {pkg_line})."
+                extra = (
+                    f"\n\nManaged runtime packages ({len(pkg_list)} total in the default profile, "
+                    f"notable: {pkg_line})."
+                )
             else:
-                extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
+                extra = (
+                    f"\n\nManaged runtime packages: {len(pkg_list)} total in the default profile "
+                    "(plus any explicit overlay installs)."
+                )
             scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
 
         # Inject scratchpad wisdom from memory (procedural priming)
