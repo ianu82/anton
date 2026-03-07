@@ -71,7 +71,7 @@ def assert_workspace_tree_is_direct(root: Path, *, mode_name: str) -> None:
         with os.scandir(current) as entries:
             for entry in entries:
                 entry_path = Path(entry.path)
-                if current == resolved_root and is_safe_mode_excluded_dir(resolved_root, entry_path):
+                if is_safe_mode_excluded_dir(resolved_root, entry_path):
                     continue
                 if entry.is_symlink():
                     raise RuntimeError(

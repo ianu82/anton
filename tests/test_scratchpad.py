@@ -10,7 +10,7 @@ import pytest
 
 import anton.scratchpad as scratchpad_module
 from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
-from anton.runtime import ensure_runtime
+from anton.runtime import ensure_runtime, workspace_hash
 from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
 
 pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
@@ -220,6 +220,33 @@ class TestScratchpadEdgeCases:
 
 
 class TestScratchpadManager:
+    def test_restricted_mode_uses_global_workspace_scoped_overlay_base(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTON_SCRATCHPAD_BASE", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        manager = ScratchpadManager(
+            workspace_path=workspace,
+            execution_mode=ExecutionMode.READ_ONLY,
+        )
+
+        assert manager._venvs_base == (
+            Path("~/.anton/scratchpad-venvs").expanduser()
+            / workspace_hash(workspace)
+        )
+
+    def test_full_trust_keeps_workspace_local_overlay_base(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTON_SCRATCHPAD_BASE", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        manager = ScratchpadManager(
+            workspace_path=workspace,
+            execution_mode=ExecutionMode.FULL_TRUST,
+        )
+
+        assert manager._venvs_base == workspace / ".anton" / "scratchpad-venvs"
+
     async def test_get_or_create(self):
         """Auto-creates a scratchpad on first access."""
         mgr = ScratchpadManager()

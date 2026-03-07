@@ -24,6 +24,7 @@ from anton.runtime import (
     runtime_lock_hash,
     runtime_packages_for_profile,
     runtime_site_packages_path,
+    workspace_hash,
 )
 from anton.sandbox import build_sandbox_launch
 
@@ -882,8 +883,16 @@ class ScratchpadManager:
                 else ""
             ),
         )
-        if workspace_path is not None:
+        override = os.environ.get("ANTON_SCRATCHPAD_BASE")
+        if override:
+            self._venvs_base = Path(override).expanduser()
+        elif workspace_path is not None and self._execution_policy.mode is ExecutionMode.FULL_TRUST:
             self._venvs_base = workspace_path / ".anton" / "scratchpad-venvs"
+        elif workspace_path is not None:
+            self._venvs_base = (
+                Path("~/.anton/scratchpad-venvs").expanduser()
+                / workspace_hash(workspace_path)
+            )
         else:
             self._venvs_base = Path("~/.anton/scratchpad-venvs").expanduser()
         self._available_packages: list[str] = self.probe_packages()
