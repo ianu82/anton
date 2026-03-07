@@ -13,6 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from anton.runtime import log_package_event
+
 _CELL_TIMEOUT_DEFAULT = 120        # Default total timeout when no estimate given
 _CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before killing
 _INSTALL_TIMEOUT = 120
@@ -68,6 +70,7 @@ class Scratchpad:
     _venv_python: str | None = field(default=None, repr=False)
     _installed_packages: set[str] = field(default_factory=set, repr=False)
     _secret_handler: Callable[[str, str], str | None] | None = field(default=None, repr=False)
+    _workspace_path: Path | None = field(default=None, repr=False)
 
     _MAX_VENV_RETRIES = 3
 
@@ -238,6 +241,8 @@ class Scratchpad:
         uv = self._find_uv()
         if uv:
             env["ANTON_UV_PATH"] = uv
+        if self._workspace_path is not None:
+            env["ANTON_WORKSPACE_PATH"] = str(self._workspace_path)
 
         # Ensure the anton package is importable in the subprocess (needed for
         # get_llm and skill loading). The boot script runs from a temp file, so
@@ -582,7 +587,7 @@ class Scratchpad:
             self._venv_dir = None
             self._venv_python = None
 
-    async def install_packages(self, packages: list[str]) -> str:
+    async def install_packages(self, packages: list[str], *, source: str = "scratchpad.install") -> str:
         """Install packages into the scratchpad's venv via pip (or uv pip)."""
         if not packages:
             return "No packages specified."
@@ -598,6 +603,16 @@ class Scratchpad:
         else:
             cmd = [self._venv_python, "-m", "pip", "install", "--no-input", *needed]
 
+        for package in needed:
+            log_package_event(
+                "explicit_install",
+                package=package,
+                scratchpad=self.name,
+                source=source,
+                status="started",
+                workspace_path=self._workspace_path,
+            )
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -608,9 +623,29 @@ class Scratchpad:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            for package in needed:
+                log_package_event(
+                    "install_failure",
+                    package=package,
+                    scratchpad=self.name,
+                    source=source,
+                    status="timed_out",
+                    error=f"Install timed out after {_INSTALL_TIMEOUT}s.",
+                    workspace_path=self._workspace_path,
+                )
             return f"Install timed out after {_INSTALL_TIMEOUT}s."
         output = stdout.decode()
         if proc.returncode != 0:
+            for package in needed:
+                log_package_event(
+                    "install_failure",
+                    package=package,
+                    scratchpad=self.name,
+                    source=source,
+                    status=f"exit_{proc.returncode}",
+                    error=output,
+                    workspace_path=self._workspace_path,
+                )
             return f"Install failed (exit {proc.returncode}):\n{output}"
         # Track successfully installed packages
         for p in needed:
@@ -627,12 +662,14 @@ class ScratchpadManager:
         coding_model: str = "",
         coding_api_key: str = "",
         secret_handler: Callable[[str, str], str | None] | None = None,
+        workspace_path: Path | None = None,
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
         self._secret_handler = secret_handler
+        self._workspace_path = workspace_path
         self._available_packages: list[str] = self.probe_packages()
 
     @staticmethod
@@ -651,6 +688,7 @@ class ScratchpadManager:
                 _coding_model=self._coding_model,
                 _coding_api_key=self._coding_api_key,
                 _secret_handler=self._secret_handler,
+                _workspace_path=self._workspace_path,
             )
             await pad.start()
             self._pads[name] = pad

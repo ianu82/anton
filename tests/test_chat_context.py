@@ -366,3 +366,24 @@ class TestRuntimeContext:
         system_prompt = call_kwargs.kwargs.get("system", "")
         assert "request_secret" in system_prompt
         assert "NEVER passes through you" in system_prompt
+
+    async def test_system_prompt_describes_local_privileged_scratchpad(self):
+        """System prompt should not describe the scratchpad as a security sandbox."""
+        mock_llm = AsyncMock()
+        mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
+
+        session = ChatSession(mock_llm, runtime_context="")
+        await session.turn("hi")
+
+        call_kwargs = mock_llm.plan.call_args
+        system_prompt = call_kwargs.kwargs.get("system", "")
+        assert "local Python subprocess" in system_prompt
+        assert "not a security sandbox" in system_prompt
+
+    def test_scratchpad_tool_description_warns_about_privileges(self):
+        """Tool description should explain the current trust model honestly."""
+        session = ChatSession(AsyncMock(), runtime_context="")
+        scratchpad_tool = next(tool for tool in session._build_tools() if tool["name"] == "scratchpad")
+        description = scratchpad_tool["description"]
+        assert "not a security sandbox" in description
+        assert "may be available in os.environ" in description

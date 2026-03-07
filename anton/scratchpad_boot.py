@@ -178,6 +178,20 @@ _real_stdin = sys.stdin
 
 _PROGRESS_MARKER = "__ANTON_PROGRESS__"
 
+
+def _log_package_event(event, **kwargs):
+    try:
+        from anton.runtime import log_package_event as _runtime_log_package_event
+
+        _runtime_log_package_event(
+            event,
+            workspace_path=os.environ.get("ANTON_WORKSPACE_PATH"),
+            scratchpad=os.environ.get("ANTON_SCRATCHPAD_NAME"),
+            **kwargs,
+        )
+    except Exception:
+        pass
+
 def progress(message=""):
     """Signal that long-running work is still active. Resets the inactivity timer."""
     _real_stdout.write(_PROGRESS_MARKER + " " + str(message) + "\n")
@@ -491,6 +505,12 @@ while True:
         # Auto-install the missing module and retry the cell once
         _missing = _mnf.name
         if _missing:
+            _log_package_event(
+                "missing_import",
+                package=_missing,
+                source="module_not_found",
+                status="raised",
+            )
             sys.stdout = _real_stdout
             sys.stderr = sys.__stderr__
             _cell_log_handler.buf = None
@@ -498,6 +518,12 @@ while True:
             _real_stdout.flush()
             import subprocess as _sp
             _uv_path = os.environ.get("ANTON_UV_PATH", "")
+            _log_package_event(
+                "legacy_auto_install",
+                package=_missing,
+                source="module_not_found",
+                status="started",
+            )
             if _uv_path:
                 _pip = _sp.run(
                     [_uv_path, "pip", "install", "--python", sys.executable, _missing],
@@ -521,6 +547,13 @@ while True:
                 except Exception:
                     error = traceback.format_exc()
             else:
+                _log_package_event(
+                    "install_failure",
+                    package=_missing,
+                    source="module_not_found",
+                    status=f"exit_{_pip.returncode}",
+                    error=_pip.stderr.decode(),
+                )
                 error = (
                     f"ModuleNotFoundError: No module named '{_missing}'\n"
                     f"Auto-install failed:\n{_pip.stderr.decode()}"

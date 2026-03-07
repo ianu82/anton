@@ -151,7 +151,8 @@ CONNECTOR_TOOL = {
 SCRATCHPAD_TOOL = {
     "name": "scratchpad",
     "description": (
-        "Run Python code in a persistent scratchpad. Use this whenever you need to "
+        "Run Python code in a persistent scratchpad. This is a local Python runtime "
+        "with Anton's normal process privileges, not a security sandbox. Use this whenever you need to "
         "count characters, do math, parse data, transform text, or any task that "
         "benefits from precise computation rather than guessing. Variables, imports, "
         "and data persist across cells — like a notebook you drive programmatically.\n\n"
@@ -176,11 +177,8 @@ SCRATCHPAD_TOOL = {
         "sample(var) inspects any variable with type-aware formatting — DataFrames get "
         "shape/dtypes/head, dicts get keys/values, lists get length/items. "
         "Defaults to 'preview' mode (compact); use sample(var, mode='full') for complete dump.\n"
-        "All .anton/.env secrets are available as environment variables (os.environ).\n"
-        "need_secret(variable_name, prompt_text) prompts the user for a secret (API key, "
-        "password, token) directly from scratchpad code. The value is stored in .anton/.env "
-        "and set in os.environ — never returned as a variable. Use this when your code "
-        "discovers it needs a credential mid-execution.\n\n"
+        "Environment variables loaded into Anton's process, including values from local or "
+        "global `.anton/.env` files, may be available in os.environ. Treat them as privileged data.\n\n"
         "IMPORTANT: Cells have an inactivity timeout of 30 seconds — if a cell produces "
         "no output and no progress() calls for 30s, it is killed and all state is lost. "
         "For long-running code (API calls, data extraction, heavy computation), call "

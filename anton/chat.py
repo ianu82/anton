@@ -105,6 +105,7 @@ class ChatSession:
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
             secret_handler=self._make_secret_handler(),
+            workspace_path=workspace.base if workspace is not None else None,
         )
 
     def configure_run_hooks(
