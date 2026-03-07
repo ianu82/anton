@@ -161,6 +161,7 @@ class TestMemorizeTool:
         tools = call_kwargs.kwargs.get("tools", [])
         tool_names = [t["name"] for t in tools]
         assert "memorize" not in tool_names
+        assert "patch" in tool_names
         assert "scratchpad" in tool_names
 
     async def test_cortex_includes_memorize_tool(self, cortex):
@@ -175,6 +176,7 @@ class TestMemorizeTool:
         tools = call_kwargs.kwargs.get("tools", [])
         tool_names = [t["name"] for t in tools]
         assert "memorize" in tool_names
+        assert "patch" in tool_names
         assert "scratchpad" in tool_names
 
     async def test_tool_result_in_history(self, cortex, memory_dirs):

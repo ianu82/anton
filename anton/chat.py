@@ -35,6 +35,7 @@ from anton.llm.provider import (
 from anton.scratchpad import ScratchpadManager
 from anton.tools import (
     MEMORIZE_TOOL,
+    PATCH_TOOL,
     RECALL_TOOL,
     SCRATCHPAD_TOOL,
     dispatch_tool,
@@ -219,7 +220,7 @@ class ChatSession:
             if wisdom:
                 scratchpad_tool["description"] += f"\n\nLessons from past sessions:\n{wisdom}"
 
-        tools = [scratchpad_tool]
+        tools = [PATCH_TOOL, scratchpad_tool]
         if self._cortex is not None:
             tools.append(MEMORIZE_TOOL)
         elif self._self_awareness is not None:

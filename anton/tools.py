@@ -142,6 +142,51 @@ RECALL_TOOL = {
     },
 }
 
+PATCH_TOOL = {
+    "name": "patch",
+    "description": (
+        "Apply deterministic workspace file edits without arbitrary Python execution. "
+        "Prefer this tool for normal text/code edits. "
+        "Each edit must target a workspace path and use exact-match verification: "
+        "`replace` edits must provide the current `old_text`, which must appear exactly once. "
+        "`create` creates a new file with `new_text`. "
+        "`delete` removes a file and can optionally verify its current contents via `old_text`. "
+        "This tool respects Anton's execution mode and rejects edits in read_only mode."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "edits": {
+                "type": "array",
+                "description": "Ordered file edits to apply.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["create", "replace", "delete"],
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Workspace-relative file path to edit.",
+                        },
+                        "old_text": {
+                            "type": "string",
+                            "description": "Current text to verify before replace/delete.",
+                        },
+                        "new_text": {
+                            "type": "string",
+                            "description": "Replacement or created file contents.",
+                        },
+                    },
+                    "required": ["kind", "path"],
+                },
+            },
+        },
+        "required": ["edits"],
+    },
+}
+
 SCRATCHPAD_TOOL = {
     "name": "scratchpad",
     "description": (
@@ -157,6 +202,8 @@ SCRATCHPAD_TOOL = {
         "- dump: Show a clean notebook-style summary of cells (code + truncated output)\n"
         "- install: Install Python packages into the scratchpad's environment. "
         "Packages persist across resets.\n\n"
+        "For normal workspace text/code edits, prefer the `patch` tool. Use scratchpad when "
+        "you need computation, parsing, generation, or multi-step analysis.\n"
         "Use print() to produce output. The scratchpad runs as a local Python subprocess "
         "with Anton's normal process privileges, not a security sandbox. "
         "Scratchpads use Anton-managed runtime profiles rather than ambient host packages. "
@@ -442,10 +489,20 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return f"Unknown scratchpad action: {action}"
 
 
+async def handle_patch(session: ChatSession, tc_input: dict) -> str:
+    """Apply deterministic workspace edits."""
+    from anton.patch_tool import apply_workspace_edits
+
+    edits = tc_input.get("edits", [])
+    return apply_workspace_edits(session, edits)
+
+
 async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) -> str:
     """Dispatch a tool call by name. Returns result text."""
     if tool_name == "memorize":
         return await handle_memorize(session, tc_input)
+    elif tool_name == "patch":
+        return await handle_patch(session, tc_input)
     elif tool_name == "scratchpad":
         return await handle_scratchpad(session, tc_input)
     elif tool_name == "recall":

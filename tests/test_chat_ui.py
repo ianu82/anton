@@ -204,6 +204,13 @@ class TestActivityTracking:
         )
         assert result == "Scratchpad(exec)"
 
+    def test_patch_display_shows_edit_count(self):
+        result = _tool_display_text(
+            "patch",
+            '{"edits": [{"kind": "create", "path": "a.txt"}, {"kind": "replace", "path": "b.txt"}]}',
+        )
+        assert result == "Patch(2 edit(s))"
+
     @patch("anton.chat_ui.Live")
     def test_text_routes_to_initial_before_tools(self, MockLive):
         display, _ = self._make_display()

@@ -43,6 +43,9 @@ code, files, or data in the workspace, use the scratchpad instead.
 SCRATCHPAD:
 - Use the scratchpad for computation, data analysis, web scraping, plotting, file I/O, \
 shell commands, and anything that needs precise execution.
+- For normal text/code edits inside the workspace, prefer the patch tool over scratchpad \
+code. Use scratchpad when you need computation, analysis, parsing, or generated content \
+to decide what to edit.
 - Each scratchpad has its own persistent overlay environment attached to an Anton-managed \
 runtime profile. The default profile is `base`; use `ml` or `browser` when the task \
 needs those capabilities. Scratchpads still run with Anton's normal local process \
