@@ -1,0 +1,9 @@
+{
+  "description": "Optional machine-learning runtime extensions.",
+  "extends": [
+    "base"
+  ],
+  "packages": [
+    "scikit-learn==1.6.1"
+  ]
+}

@@ -413,3 +413,53 @@ def runtime_stats() -> None:
                 str(row.workspaces),
             )
         console.print(package_table)
+
+
+@runtime_app.command("list")
+def runtime_list() -> None:
+    """List managed runtime profiles and hydrated runtimes."""
+    from anton.runtime import list_installed_runtimes, list_runtime_profiles
+
+    profiles = list_runtime_profiles()
+    installed = {item.profile: item for item in list_installed_runtimes()}
+
+    table = Table(title="Anton Runtime Profiles")
+    table.add_column("Profile", style="anton.cyan")
+    table.add_column("Packages", justify="right")
+    table.add_column("Hydrated")
+    table.add_column("Location")
+
+    for profile in profiles:
+        runtime = installed.get(profile.name)
+        table.add_row(
+            profile.name,
+            str(len(profile.packages)),
+            "yes" if runtime is not None else "no",
+            str(runtime.path) if runtime is not None else "-",
+        )
+
+    console.print(table)
+
+
+@runtime_app.command("install")
+def runtime_install(profile: str) -> None:
+    """Hydrate a managed runtime profile."""
+    from anton.runtime import ensure_runtime
+
+    target = ensure_runtime(profile)
+    console.print(f"[anton.success]Hydrated runtime profile {profile} at {target}[/]")
+
+
+@runtime_app.command("gc")
+def runtime_gc() -> None:
+    """Delete stale runtime versions from disk."""
+    from anton.runtime import garbage_collect_runtimes
+
+    removed = garbage_collect_runtimes()
+    if not removed:
+        console.print("[dim]No stale runtime versions to remove.[/]")
+        return
+
+    console.print(f"[anton.success]Removed {len(removed)} runtime version(s).[/]")
+    for path in removed:
+        console.print(str(path))
