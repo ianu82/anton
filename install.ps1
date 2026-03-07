@@ -149,19 +149,21 @@ else {
     Write-Host "  Anton may still work — uv manages the environment internally."
 }
 
-# ── 7. Configure firewall for scratchpad internet access ──────────
-#    Anton's scratchpads run Python in per-scratchpad venvs under
+# ── 7. Configure firewall for full_trust scratchpad internet access ──
+#    Anton's full_trust scratchpads run Python in per-scratchpad venvs under
 #    ~/.anton/scratchpad-venvs/<name>/Scripts/python.exe.
-#    Windows Firewall blocks new executables by default, so we add a
-#    wildcard-style rule covering the entire scratchpad-venvs directory.
+#    Windows Firewall can block new executables by default, so we add rules
+#    for the current Anton tool Python and any existing scratchpad venvs.
+#    Restricted safe modes intentionally do not use outbound network access.
 $scratchpadVenvsDir = Join-Path $HOME ".anton\scratchpad-venvs"
 Write-Host ""
-Write-Host "  Anton's scratchpads need internet access (for web scraping, APIs, etc.)."
-Write-Host "  This adds a Windows Firewall rule allowing Python executables under:"
+Write-Host "  Anton's full_trust scratchpads may need internet access (for web scraping, APIs, etc.)."
+Write-Host "  This adds Windows Firewall rules for existing Anton Python executables under:"
 Write-Host "    $scratchpadVenvsDir"
+Write-Host "  Restricted safe modes intentionally do not use these firewall rules."
 Write-Host ""
 
-if (Confirm-Step "Allow scratchpad internet access? (requires admin)") {
+if (Confirm-Step "Allow full_trust scratchpad internet access? (requires admin)") {
     # Create the venvs dir so the path exists
     if (-not (Test-Path $scratchpadVenvsDir)) {
         New-Item -ItemType Directory -Path $scratchpadVenvsDir -Force | Out-Null
@@ -200,18 +202,18 @@ if (Confirm-Step "Allow scratchpad internet access? (requires admin)") {
             -Verb RunAs -Wait -WindowStyle Hidden
 
         Write-Host "  Firewall rules added ($added scratchpad venvs)" -ForegroundColor Green
-        Write-Host "  Note: New scratchpads will create venvs automatically." -ForegroundColor Yellow
-        Write-Host "  If a new scratchpad's internet calls time out, re-run this script or add a rule manually:"
+        Write-Host "  Note: New full_trust scratchpads will create venvs automatically." -ForegroundColor Yellow
+        Write-Host "  If a new full_trust scratchpad's internet calls time out, re-run this script or add a rule manually:"
         Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
     }
     catch {
         Write-Host "  Could not add firewall rules (admin declined or unavailable)." -ForegroundColor Yellow
-        Write-Host "  You can add them manually later for each scratchpad:"
+        Write-Host "  You can add them manually later for each full_trust scratchpad:"
         Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
     }
 }
 else {
-    Write-Host "  Skipped. If scratchpad internet calls time out, run this in an admin PowerShell:"
+    Write-Host "  Skipped. If full_trust scratchpad internet calls time out, run this in an admin PowerShell:"
     Write-Host "    netsh advfirewall firewall add rule name=`"Anton Scratchpad`" dir=out action=allow program=`"$scratchpadVenvsDir\<name>\Scripts\python.exe`""
 }
 

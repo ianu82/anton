@@ -126,11 +126,11 @@ anton runtime stats
 - **git** — required ([macOS](https://git-scm.com/downloads/mac) / `sudo apt install git` / `winget install Git.Git`)
 - **Python 3.11+** — optional (uv downloads it automatically if missing)
 - **curl** — macOS/Linux only, usually pre-installed
-- Internet connection. No admin/sudo required (Windows install will optionally request admin to add a firewall rule for scratchpad internet access).
+- Internet connection. No admin/sudo required (Windows install will optionally request admin to add a firewall rule for `full_trust` scratchpad internet access).
 
-### Windows: scratchpad internet access
+### Windows: `full_trust` scratchpad internet access
 
-The install script adds a Windows Firewall rule so the scratchpad can reach the internet (for web scraping, API calls, etc.). If you skipped that step or installed manually, run this in an **admin PowerShell**:
+The install script can add Windows Firewall rules so `full_trust` scratchpads can reach the internet (for web scraping, API calls, etc.). Restricted safe modes intentionally do not use these firewall rules. If you skipped that step or installed manually, run this in an **admin PowerShell**:
 
 ```powershell
 netsh advfirewall firewall add rule name="Anton Scratchpad" dir=out action=allow program="$env:USERPROFILE\.anton\scratchpad-venv\Scripts\python.exe"
