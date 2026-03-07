@@ -12,6 +12,7 @@ import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
 from anton.runtime import (
     default_runtime_profile,
     ensure_runtime,
@@ -80,6 +81,7 @@ class Scratchpad:
     _profile: str = field(default_factory=default_runtime_profile, repr=False)
     _runtime_path: Path | None = field(default=None, repr=False)
     _runtime_lock_hash: str = field(default="", repr=False)
+    _execution_policy: ScratchpadExecutionPolicy = field(default_factory=ScratchpadExecutionPolicy, repr=False)
     _venvs_base: Path = field(
         default_factory=lambda: Path("~/.anton/scratchpad-venvs").expanduser(),
         repr=False,
@@ -266,37 +268,18 @@ class Scratchpad:
         os.close(fd)
         self._boot_path = path
 
-        env = os.environ.copy()
-        if self._coding_model:
-            env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
-        if self._coding_provider:
-            env["ANTON_SCRATCHPAD_PROVIDER"] = self._coding_provider
-        env["ANTON_RUNTIME_PROFILE"] = self._profile
-        env["ANTON_SCRATCHPAD_NAME"] = self.name
-        if self._workspace_path is not None:
-            env["ANTON_WORKSPACE_PATH"] = str(self._workspace_path)
-        if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
-            env["ANTHROPIC_API_KEY"] = env["ANTON_ANTHROPIC_API_KEY"]
-        if "OPENAI_API_KEY" not in env and "ANTON_OPENAI_API_KEY" in env:
-            env["OPENAI_API_KEY"] = env["ANTON_OPENAI_API_KEY"]
-        if "OPENAI_BASE_URL" not in env and "ANTON_OPENAI_BASE_URL" in env:
-            env["OPENAI_BASE_URL"] = env["ANTON_OPENAI_BASE_URL"]
-        if self._coding_api_key:
-            sdk_key = {
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-                "openai-compatible": "OPENAI_API_KEY",
-            }.get(self._coding_provider, "")
-            if sdk_key and sdk_key not in env:
-                env[sdk_key] = self._coding_api_key
         uv = self._find_uv()
-        if uv:
-            env["ANTON_UV_PATH"] = uv
-
-        anton_root = str(Path(__file__).resolve().parent.parent)
-        python_path = env.get("PYTHONPATH", "")
-        if anton_root not in python_path:
-            env["PYTHONPATH"] = anton_root + (os.pathsep + python_path if python_path else "")
+        env = self._execution_policy.build_subprocess_env(
+            base_env=os.environ,
+            coding_provider=self._coding_provider,
+            coding_model=self._coding_model,
+            coding_api_key=self._coding_api_key,
+            runtime_profile=self._profile,
+            scratchpad_name=self.name,
+            workspace_path=self._workspace_path,
+            anton_root=Path(__file__).resolve().parent.parent,
+            uv_path=uv,
+        )
 
         try:
             self._proc = await asyncio.create_subprocess_exec(
@@ -759,17 +742,29 @@ class ScratchpadManager:
         coding_model: str = "",
         coding_api_key: str = "",
         workspace_path: Path | None = None,
+        execution_mode: ExecutionMode | str = ExecutionMode.FULL_TRUST,
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
         self._workspace_path = workspace_path
+        self._execution_policy = ScratchpadExecutionPolicy(mode=execution_mode)
         if workspace_path is not None:
             self._venvs_base = workspace_path / ".anton" / "scratchpad-venvs"
         else:
             self._venvs_base = Path("~/.anton/scratchpad-venvs").expanduser()
         self._available_packages: list[str] = self.probe_packages()
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        return self._execution_policy.mode
+
+    def authorize_action(self, action: str, *, packages: list[str] | None = None) -> str | None:
+        return self._execution_policy.authorize(action, packages=packages)
+
+    def policy_prompt_note(self) -> str:
+        return self._execution_policy.prompt_note()
 
     @staticmethod
     def probe_packages() -> list[str]:
@@ -793,6 +788,7 @@ class ScratchpadManager:
                 _coding_api_key=self._coding_api_key,
                 _workspace_path=self._workspace_path,
                 _profile=desired_profile,
+                _execution_policy=self._execution_policy,
                 _venvs_base=self._venvs_base,
             )
             await pad.start()

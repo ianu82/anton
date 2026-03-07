@@ -18,6 +18,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
+from anton.execution_policy import ExecutionMode
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     ContextOverflowError,
@@ -83,6 +84,7 @@ class ChatSession:
         initial_history: list[dict] | None = None,
         history_store: HistoryStore | None = None,
         session_id: str | None = None,
+        execution_mode: ExecutionMode | str = ExecutionMode.FULL_TRUST,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -102,6 +104,7 @@ class ChatSession:
             coding_model=getattr(llm_client, "coding_model", ""),
             coding_api_key=coding_api_key,
             workspace_path=workspace.base if workspace else None,
+            execution_mode=execution_mode,
         )
 
     @property
@@ -168,6 +171,7 @@ class ChatSession:
             md_context = self._workspace.build_anton_md_context()
             if md_context:
                 prompt += md_context
+        prompt += f"\n\n## Execution Policy\n- {self._scratchpads.policy_prompt_note()}"
         return prompt
 
     # Packages the LLM is most likely to care about when writing scratchpad code.
@@ -187,6 +191,9 @@ class ChatSession:
 
     def _build_tools(self) -> list[dict]:
         scratchpad_tool = dict(SCRATCHPAD_TOOL)
+        scratchpad_tool["description"] += (
+            f"\n\nExecution policy: {self._scratchpads.policy_prompt_note()}"
+        )
         pkg_list = self._scratchpads.available_packages()
         if pkg_list:
             notable = sorted(
@@ -204,7 +211,7 @@ class ChatSession:
                     f"\n\nManaged runtime packages: {len(pkg_list)} total in the default profile "
                     "(plus any explicit overlay installs)."
                 )
-            scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
+            scratchpad_tool["description"] += extra
 
         # Inject scratchpad wisdom from memory (procedural priming)
         if self._cortex is not None:

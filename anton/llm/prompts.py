@@ -80,6 +80,9 @@ operations, batch I/O, and focused cells that do one thing well.
 - Do not assume arbitrary host Python packages are available by default. Prefer the \
 managed runtime profiles first; if a package is missing, use the package guidance in the \
 scratchpad result and then either switch profiles or install explicitly into the overlay.
+- Capability availability depends on Anton's execution policy. The current default is \
+`full_trust`, but if Anton reports a restricted install, secret, or helper capability, \
+adapt to that feedback instead of assuming full ambient machine access.
 
 FILE ATTACHMENTS:
 - Users can drag files or paste clipboard images. These appear as <file path="..."> tags.
