@@ -9,10 +9,12 @@ import shutil
 import sys
 import tempfile
 import venv
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
+from anton.minds import query_datasource as query_minds_datasource
 from anton.runtime import (
     default_runtime_profile,
     ensure_runtime,
@@ -53,6 +55,7 @@ _BOOT_SCRIPT_PATH = Path(__file__).parent / "scratchpad_boot.py"
 _CELL_DELIM = "__ANTON_CELL_END__"
 _RESULT_START = "__ANTON_RESULT__"
 _RESULT_END = "__ANTON_RESULT_END__"
+_RPC_MARKER = "__ANTON_RPC__"
 
 
 @dataclass
@@ -85,6 +88,11 @@ class Scratchpad:
     _runtime_lock_hash: str = field(default="", repr=False)
     _execution_policy: ScratchpadExecutionPolicy = field(default_factory=ScratchpadExecutionPolicy, repr=False)
     _sandbox_tmp_dir: str | None = field(default=None, repr=False)
+    _minds_url: str = field(default="", repr=False)
+    _minds_api_key: str = field(default="", repr=False)
+    _minds_datasource: str = field(default="", repr=False)
+    _minds_ssl_verify: bool = field(default=True, repr=False)
+    _minds_query_handler: Callable[[str, str | None], dict] | None = field(default=None, repr=False)
     _venvs_base: Path = field(
         default_factory=lambda: Path("~/.anton/scratchpad-venvs").expanduser(),
         repr=False,
@@ -320,6 +328,12 @@ class Scratchpad:
             anton_root=Path(__file__).resolve().parent.parent,
             uv_path=uv,
         )
+        if self._minds_query_handler is not None and self._minds_datasource:
+            env["ANTON_MINDS_DATASOURCE"] = self._minds_datasource
+            env["ANTON_MINDS_QUERY_BROKER"] = "1"
+            env.pop("ANTON_MINDS_API_KEY", None)
+            env.pop("ANTON_MINDS_URL", None)
+            env.pop("ANTON_MINDS_SSL_VERIFY", None)
         if self._execution_policy.mode is not ExecutionMode.FULL_TRUST:
             sandbox_tmp_str = str(sandbox_tmp or self._venv_dir)
             env["TMPDIR"] = sandbox_tmp_str
@@ -503,6 +517,9 @@ class Scratchpad:
                 message = line[len(_PROGRESS_MARKER):].strip()
                 yield message
                 continue
+            if line.startswith(_RPC_MARKER):
+                await self._handle_rpc_line(line)
+                continue
 
             if line == _RESULT_START:
                 in_result = True
@@ -513,6 +530,54 @@ class Scratchpad:
                 lines.append(line)
 
         yield json.loads("\n".join(lines))
+
+    async def _handle_rpc_line(self, line: str) -> None:
+        request_json = line[len(_RPC_MARKER):].strip()
+        try:
+            request = json.loads(request_json)
+        except json.JSONDecodeError:
+            await self._write_rpc_response({"ok": False, "error": "Invalid RPC request JSON."})
+            return
+
+        kind = str(request.get("kind", ""))
+        payload = request.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if kind == "minds_query":
+            response = await self._handle_minds_query_rpc(payload)
+        else:
+            response = {"ok": False, "error": f"Unsupported RPC request kind: {kind}"}
+
+        await self._write_rpc_response(response)
+
+    async def _handle_minds_query_rpc(self, payload: dict) -> dict:
+        if self._minds_query_handler is None:
+            return {"ok": False, "error": "Minds query helper is not configured in this session."}
+
+        query = payload.get("query")
+        datasource = payload.get("datasource")
+        if not isinstance(query, str) or not query.strip():
+            return {"ok": False, "error": "Minds query helper requires a non-empty SQL query string."}
+        if datasource is not None and not isinstance(datasource, str):
+            return {"ok": False, "error": "Datasource override must be a string when provided."}
+
+        try:
+            result = await asyncio.to_thread(
+                self._minds_query_handler,
+                query,
+                datasource,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"Minds query failed: {exc}"}
+        return {"ok": True, "result": result}
+
+    async def _write_rpc_response(self, payload: dict) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            raise RuntimeError("Scratchpad process is not available for RPC response.")
+        line = json.dumps(payload, separators=(",", ":")) + "\n"
+        self._proc.stdin.write(line.encode())
+        await self._proc.stdin.drain()
 
     def view(self) -> str:
         """Format all cells with their outputs."""
@@ -795,18 +860,48 @@ class ScratchpadManager:
         coding_api_key: str = "",
         workspace_path: Path | None = None,
         execution_mode: ExecutionMode | str = ExecutionMode.FULL_TRUST,
+        minds_url: str = "",
+        minds_api_key: str = "",
+        minds_datasource: str = "",
+        minds_ssl_verify: bool = True,
     ) -> None:
         self._pads: dict[str, Scratchpad] = {}
         self._coding_provider: str = coding_provider
         self._coding_model: str = coding_model
         self._coding_api_key: str = coding_api_key
         self._workspace_path = workspace_path
-        self._execution_policy = ScratchpadExecutionPolicy(mode=execution_mode)
+        self._minds_url = minds_url
+        self._minds_api_key = minds_api_key
+        self._minds_datasource = minds_datasource
+        self._minds_ssl_verify = minds_ssl_verify
+        self._execution_policy = ScratchpadExecutionPolicy(
+            mode=execution_mode,
+            minds_datasource=(
+                minds_datasource
+                if minds_url and minds_api_key and minds_datasource
+                else ""
+            ),
+        )
         if workspace_path is not None:
             self._venvs_base = workspace_path / ".anton" / "scratchpad-venvs"
         else:
             self._venvs_base = Path("~/.anton/scratchpad-venvs").expanduser()
         self._available_packages: list[str] = self.probe_packages()
+
+    def _make_minds_query_handler(self) -> Callable[[str, str | None], dict] | None:
+        if not (self._minds_url and self._minds_api_key and self._minds_datasource):
+            return None
+
+        def _handler(query: str, datasource: str | None = None) -> dict:
+            return query_minds_datasource(
+                self._minds_url,
+                self._minds_api_key,
+                query,
+                datasource=datasource or self._minds_datasource,
+                verify=self._minds_ssl_verify,
+            )
+
+        return _handler
 
     @property
     def execution_mode(self) -> ExecutionMode:
@@ -844,6 +939,11 @@ class ScratchpadManager:
                 _workspace_path=self._workspace_path,
                 _profile=desired_profile,
                 _execution_policy=self._execution_policy,
+                _minds_url=self._minds_url,
+                _minds_api_key=self._minds_api_key,
+                _minds_datasource=self._minds_datasource,
+                _minds_ssl_verify=self._minds_ssl_verify,
+                _minds_query_handler=self._make_minds_query_handler(),
                 _venvs_base=self._venvs_base,
             )
             await pad.start()

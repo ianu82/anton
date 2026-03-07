@@ -224,67 +224,91 @@ if _scratchpad_model:
     except Exception:
         pass  # LLM not available — not fatal (e.g. anthropic not installed)
 
-# --- Inject query_minds_data() for Minds datasource access from scratchpad ---
-_minds_datasource = os.environ.get("ANTON_MINDS_DATASOURCE", "")
-_minds_api_key = os.environ.get("ANTON_MINDS_API_KEY", "")
-_minds_url = os.environ.get("ANTON_MINDS_URL", "")
-if _minds_datasource and _minds_api_key and _minds_url:
-    try:
-        import ssl as _minds_ssl
-        import urllib.request as _minds_urllib
-
-        _minds_ssl_verify = os.environ.get("ANTON_MINDS_SSL_VERIFY", "true").lower() != "false"
-
-        def query_minds_data(query, datasource=None):
-            """Query a Minds datasource with SQL. Returns dict with type, data, column_names, error_message."""
-            ds = datasource or _minds_datasource
-            url = f"{_minds_url}/api/v1/datasources/{ds}/query"
-            payload = json.dumps({"query": query, "native_query": True}).encode()
-
-            req = _minds_urllib.Request(url, data=payload, method="POST")
-            req.add_header("Authorization", f"Bearer {_minds_api_key}")
-            req.add_header("Content-Type", "application/json")
-            req.add_header("Accept", "application/json")
-            req.add_header("User-Agent", "anton/1.0")
-
-            ctx = None
-            if not _minds_ssl_verify:
-                ctx = _minds_ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = _minds_ssl.CERT_NONE
-
-            try:
-                with _minds_urllib.urlopen(req, context=ctx, timeout=60) as resp:
-                    return json.loads(resp.read().decode())
-            except _minds_urllib.HTTPError as e:
-                body = ""
-                try:
-                    body = e.read().decode()
-                except Exception:
-                    pass
-                return {
-                    "type": "error",
-                    "data": None,
-                    "column_names": None,
-                    "error_message": f"HTTP {e.code}: {body or e.reason}",
-                }
-            except Exception as e:
-                return {
-                    "type": "error",
-                    "data": None,
-                    "column_names": None,
-                    "error_message": str(e),
-                }
-
-        namespace["query_minds_data"] = query_minds_data
-    except Exception:
-        pass  # Minds query not available — not fatal
-
 # Read-execute loop
 _real_stdout = sys.stdout
 _real_stdin = sys.stdin
 
 _PROGRESS_MARKER = "__ANTON_PROGRESS__"
+_RPC_MARKER = "__ANTON_RPC__"
+
+
+def _rpc_call(kind, payload):
+    request = {"kind": kind, "payload": payload}
+    _real_stdout.write(_RPC_MARKER + " " + json.dumps(request) + "\n")
+    _real_stdout.flush()
+    response_line = _real_stdin.readline()
+    if not response_line:
+        raise RuntimeError("Anton RPC channel closed unexpectedly.")
+    response = json.loads(response_line)
+    if not response.get("ok"):
+        raise RuntimeError(str(response.get("error", "Anton RPC request failed.")))
+    return response.get("result")
+
+
+# --- Inject query_minds_data() for Minds datasource access from scratchpad ---
+_minds_datasource = os.environ.get("ANTON_MINDS_DATASOURCE", "")
+_minds_broker = os.environ.get("ANTON_MINDS_QUERY_BROKER", "").lower() in {"1", "true", "yes"}
+_minds_api_key = os.environ.get("ANTON_MINDS_API_KEY", "")
+_minds_url = os.environ.get("ANTON_MINDS_URL", "")
+if _minds_datasource and (_minds_broker or (_minds_api_key and _minds_url)):
+    try:
+        if _minds_broker:
+            def query_minds_data(query, datasource=None):
+                """Query a Minds datasource with SQL. Returns dict with type, data, column_names, error_message."""
+                return _rpc_call("minds_query", {
+                    "query": query,
+                    "datasource": datasource,
+                })
+        else:
+            import ssl as _minds_ssl
+            import urllib.request as _minds_urllib
+
+            _minds_ssl_verify = os.environ.get("ANTON_MINDS_SSL_VERIFY", "true").lower() != "false"
+
+            def query_minds_data(query, datasource=None):
+                """Query a Minds datasource with SQL. Returns dict with type, data, column_names, error_message."""
+                ds = datasource or _minds_datasource
+                url = f"{_minds_url}/api/v1/datasources/{ds}/query"
+                payload = json.dumps({"query": query, "native_query": True}).encode()
+
+                req = _minds_urllib.Request(url, data=payload, method="POST")
+                req.add_header("Authorization", f"Bearer {_minds_api_key}")
+                req.add_header("Content-Type", "application/json")
+                req.add_header("Accept", "application/json")
+                req.add_header("User-Agent", "anton/1.0")
+
+                ctx = None
+                if not _minds_ssl_verify:
+                    ctx = _minds_ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = _minds_ssl.CERT_NONE
+
+                try:
+                    with _minds_urllib.urlopen(req, context=ctx, timeout=60) as resp:
+                        return json.loads(resp.read().decode())
+                except _minds_urllib.HTTPError as e:
+                    body = ""
+                    try:
+                        body = e.read().decode()
+                    except Exception:
+                        pass
+                    return {
+                        "type": "error",
+                        "data": None,
+                        "column_names": None,
+                        "error_message": f"HTTP {e.code}: {body or e.reason}",
+                    }
+                except Exception as e:
+                    return {
+                        "type": "error",
+                        "data": None,
+                        "column_names": None,
+                        "error_message": str(e),
+                    }
+
+        namespace["query_minds_data"] = query_minds_data
+    except Exception:
+        pass  # Minds query not available — not fatal
 
 
 def _log_package_event(event, **kwargs):

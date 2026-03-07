@@ -18,7 +18,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
-from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
+from anton.execution_policy import ExecutionMode
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     ContextOverflowError,
@@ -32,6 +32,7 @@ from anton.llm.provider import (
     StreamToolUseEnd,
     StreamToolUseStart,
 )
+from anton.minds import list_datasources as minds_list_datasources
 from anton.scratchpad import ScratchpadManager
 from anton.tools import (
     MEMORIZE_TOOL,
@@ -86,6 +87,10 @@ class ChatSession:
         history_store: HistoryStore | None = None,
         session_id: str | None = None,
         execution_mode: ExecutionMode | str = ExecutionMode.FULL_TRUST,
+        minds_url: str = "",
+        minds_api_key: str = "",
+        minds_datasource: str = "",
+        minds_ssl_verify: bool = True,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -106,6 +111,10 @@ class ChatSession:
             coding_api_key=coding_api_key,
             workspace_path=workspace.base if workspace else None,
             execution_mode=execution_mode,
+            minds_url=minds_url,
+            minds_api_key=minds_api_key,
+            minds_datasource=minds_datasource,
+            minds_ssl_verify=minds_ssl_verify,
         )
 
     @property
@@ -749,7 +758,6 @@ def _apply_error_tracking(
 
 def _build_runtime_context(settings: AntonSettings) -> str:
     """Build runtime context string including Minds datasource info if configured."""
-    policy = ScratchpadExecutionPolicy(mode=settings.execution_mode)
     ctx = (
         f"- Provider: {settings.planning_provider}\n"
         f"- Planning model: {settings.planning_model}\n"
@@ -762,28 +770,17 @@ def _build_runtime_context(settings: AntonSettings) -> str:
     _ds_key = getattr(settings, "minds_api_key", None)
     if _ds and _ds_key:
         engine = getattr(settings, "minds_datasource_engine", None) or "unknown"
-        if policy.minds_query_available():
-            ctx += (
-                f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
-                f"- Datasource: {_ds}\n"
-                f"- Engine: {engine}\n"
-                f"- To query data, use the scratchpad with the built-in `query_minds_data()` function.\n"
-                f"  It is pre-loaded in the scratchpad namespace — DO NOT import it. Just call it directly.\n"
-                f'  Example: result = query_minds_data("SELECT * FROM users LIMIT 5")\n'
-                f"  Returns dict with 'type', 'data' (list of rows), 'column_names', 'error_message'.\n"
-                f'  Optional: query_minds_data("SELECT ...", datasource="other_ds")\n'
-                f"- Write SQL appropriate for the {engine} engine."
-            )
-        else:
-            ctx += (
-                f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
-                f"- Datasource: {_ds}\n"
-                f"- Engine: {engine}\n"
-                f"- Built-in `query_minds_data()` access is unavailable in execution mode "
-                f"`{settings.execution_mode.value}` because Anton does not pass the required "
-                f"Minds credentials into restricted scratchpads.\n"
-                f"- Do not plan around that helper unless Anton explicitly grants it."
-            )
+        ctx += (
+            f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
+            f"- Datasource: {_ds}\n"
+            f"- Engine: {engine}\n"
+            f"- To query data, use the scratchpad with the built-in `query_minds_data()` function.\n"
+            f"  It is pre-loaded in the scratchpad namespace — DO NOT import it. Just call it directly.\n"
+            f'  Example: result = query_minds_data("SELECT * FROM users LIMIT 5")\n'
+            f"  Returns dict with 'type', 'data' (list of rows), 'column_names', 'error_message'.\n"
+            f'  Optional: query_minds_data("SELECT ...", datasource="other_ds")\n'
+            f"- Write SQL appropriate for the {engine} engine."
+        )
     return ctx
 
 
@@ -832,6 +829,10 @@ def _rebuild_session(
         history_store=history_store,
         session_id=session_id,
         execution_mode=settings.execution_mode,
+        minds_url=getattr(settings, "minds_url", "") or "",
+        minds_api_key=getattr(settings, "minds_api_key", "") or "",
+        minds_datasource=getattr(settings, "minds_datasource", "") or "",
+        minds_ssl_verify=getattr(settings, "minds_ssl_verify", True),
     )
 
 
@@ -1485,33 +1486,6 @@ def _describe_minds_connection_error(err: Exception) -> tuple[str, str]:
     )
 
 
-def _minds_list_datasources(base_url: str, api_key: str, verify: bool = True) -> list[dict]:
-    """Fetch datasource list from a Minds server using stdlib urllib."""
-    import json as _json
-    import ssl
-    import urllib.request
-
-    url = f"{base_url}/api/v1/datasources/"
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Accept", "application/json")
-    req.add_header("User-Agent", "anton/1.0")
-
-    ctx = None
-    if not verify:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-        data = _json.loads(resp.read().decode())
-
-    # Response may be a list or a dict with a "datasources" key
-    if isinstance(data, list):
-        return data
-    return data.get("datasources", data if isinstance(data, list) else [])
-
-
 async def _handle_setup_minds(
     console: Console,
     settings: AntonSettings,
@@ -1562,7 +1536,7 @@ async def _handle_setup_minds(
         console.print()
         console.print(f"[anton.muted]Connecting to {minds_url}...[/]")
         try:
-            datasources = _minds_list_datasources(minds_url, api_key, verify=ssl_verify)
+            datasources = minds_list_datasources(minds_url, api_key, verify=ssl_verify)
             break
         except (urllib.error.URLError, urllib.error.HTTPError) as err:
             headline, advice = _describe_minds_connection_error(err)
