@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 import anton.scratchpad as scratchpad_module
 from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
+
+
+pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
 
 
 class TestScratchpadBasicExecution:
@@ -473,14 +477,14 @@ class TestScratchpadVenv:
         finally:
             await pad.close()
 
-    async def test_venv_cleaned_on_close(self):
-        """Venv directory should be removed when the scratchpad is closed."""
+    async def test_overlay_persists_on_close(self):
+        """The persistent overlay should remain on disk after the process closes."""
         pad = Scratchpad(name="venv-close")
         await pad.start()
         venv_dir = pad._venv_dir
         assert os.path.isdir(venv_dir)
         await pad.close()
-        assert not os.path.exists(venv_dir)
+        assert os.path.exists(venv_dir)
         assert pad._venv_dir is None
         assert pad._venv_python is None
 
@@ -507,14 +511,15 @@ class TestScratchpadVenv:
         finally:
             await pad.close()
 
-    async def test_system_packages_available(self):
-        """System site-packages should be accessible (e.g. pydantic from parent env)."""
+    async def test_managed_runtime_packages_available(self):
+        """Managed runtime packages should be available inside the overlay."""
         pad = Scratchpad(name="venv-syspkg")
         await pad.start()
         try:
             cell = await pad.execute("import pydantic; print(pydantic.__name__)")
             assert cell.error is None
             assert cell.stdout.strip() == "pydantic"
+            assert (Path(pad._venv_dir) / "lib").exists() or (Path(pad._venv_dir) / "Lib").exists()
         finally:
             await pad.close()
 
@@ -631,6 +636,19 @@ class TestScratchpadInstall:
             "error": "boom",
             "workspace_path": tmp_path,
         }) in events
+
+    async def test_missing_import_returns_package_guidance(self):
+        """Missing imports should surface structured runtime guidance instead of auto-installing."""
+        pad = Scratchpad(name="missing-import")
+        await pad.start()
+        try:
+            cell = await pad.execute("import sklearn_missing_package")
+            assert cell.error is not None
+            assert cell.package_missing is not None
+            assert cell.package_missing["package"] == "sklearn_missing_package"
+            assert "Next action:" in cell.error
+        finally:
+            await pad.close()
 
 
 class TestProgressAndTimeouts:

@@ -9,6 +9,9 @@ import pytest
 from anton.scratchpad import Cell, Scratchpad
 
 
+pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
+
+
 class TestNeedSecretIPC:
     """Test the full need_secret() round-trip between subprocess and parent."""
 
