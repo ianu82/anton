@@ -34,6 +34,8 @@ TAGLINES = [
     "curiosity-driven problem solving",
 ]
 
+FORK_LABEL = "ianu82 fork"
+
 BUBBLE_PHRASES = [
     "\u2661\u2661\u2661\u2661",
     "sup",
@@ -156,7 +158,7 @@ def render_banner(console: Console, *, animate: bool = True) -> None:
 
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print(
-        f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
+        f" v{__version__} {FORK_LABEL} \u2014 [anton.muted]\"{tagline}\"[/]",
     )
 
 
@@ -171,7 +173,7 @@ def render_dashboard(console: Console) -> None:
     _render_robot_static(console)
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print(
-        f" v{__version__} \u2014 [anton.muted]\"{tagline}\"[/]",
+        f" v{__version__} {FORK_LABEL} \u2014 [anton.muted]\"{tagline}\"[/]",
     )
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()

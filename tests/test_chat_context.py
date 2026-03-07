@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from anton.chat import ChatSession, _build_runtime_context
+from anton.chat import (
+    ChatSession,
+    _build_runtime_context,
+    _chat_execution_mode_line,
+    _handle_setup_execution_mode,
+)
 from anton.config.settings import AntonSettings
 from anton.tools import MEMORIZE_TOOL
 from anton.context.self_awareness import SelfAwarenessContext
@@ -365,3 +370,95 @@ class TestRuntimeContext:
 
         assert "query_minds_data()" in context
         assert "pre-loaded in the scratchpad namespace" in context
+
+
+class TestExecutionModeSetup:
+    def test_chat_execution_mode_line(self):
+        settings = AntonSettings(execution_mode=ExecutionMode.WORKSPACE_WRITE)
+
+        assert _chat_execution_mode_line(settings) == "workspace_write mode. To change this, type /setup"
+
+    async def test_setup_execution_mode_persists_default_and_restarts_when_changed(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *args, **kwargs: "3")
+        monkeypatch.setattr(
+            "anton.sandbox.ensure_execution_mode_supported",
+            lambda mode: ExecutionMode.coerce(mode),
+        )
+
+        restarted_session = object()
+        restart_mock = AsyncMock(return_value=restarted_session)
+        monkeypatch.setattr("anton.chat._restart_session_with_history", restart_mock)
+
+        workspace_base = tmp_path / "workspace"
+        workspace_base.mkdir()
+        workspace = Workspace(workspace_base)
+        workspace.initialize()
+        settings = AntonSettings(execution_mode=ExecutionMode.FULL_TRUST)
+        console = MagicMock()
+        original_session = object()
+
+        result = await _handle_setup_execution_mode(
+            console,
+            settings,
+            workspace,
+            state={},
+            self_awareness=None,
+            cortex=None,
+            session=original_session,
+        )
+
+        assert result is restarted_session
+        assert settings.execution_mode is ExecutionMode.READ_ONLY
+        assert "ANTON_EXECUTION_MODE=read_only" in (home / ".anton" / ".env").read_text()
+        restart_mock.assert_awaited_once()
+        printed = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+        assert "must restart the current chat session" in printed
+
+    async def test_setup_execution_mode_skips_restart_when_mode_is_unchanged(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *args, **kwargs: "2")
+        monkeypatch.setattr(
+            "anton.sandbox.ensure_execution_mode_supported",
+            lambda mode: ExecutionMode.coerce(mode),
+        )
+
+        restart_mock = AsyncMock()
+        monkeypatch.setattr("anton.chat._restart_session_with_history", restart_mock)
+
+        workspace_base = tmp_path / "workspace"
+        workspace_base.mkdir()
+        workspace = Workspace(workspace_base)
+        workspace.initialize()
+        settings = AntonSettings(execution_mode=ExecutionMode.WORKSPACE_WRITE)
+        console = MagicMock()
+        original_session = object()
+
+        result = await _handle_setup_execution_mode(
+            console,
+            settings,
+            workspace,
+            state={},
+            self_awareness=None,
+            cortex=None,
+            session=original_session,
+        )
+
+        assert result is original_session
+        assert settings.execution_mode is ExecutionMode.WORKSPACE_WRITE
+        assert "ANTON_EXECUTION_MODE=workspace_write" in (home / ".anton" / ".env").read_text()
+        restart_mock.assert_not_awaited()
+        printed = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+        assert "Current chat already uses this mode." in printed

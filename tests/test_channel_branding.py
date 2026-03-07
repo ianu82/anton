@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from anton.channel.branding import TAGLINES, pick_tagline
+from anton.channel.branding import FORK_LABEL, TAGLINES, pick_tagline
 from anton.channel.theme import build_rich_theme
 
 
@@ -46,6 +46,7 @@ class TestRenderBanner:
         output = _strip_ansi(console.file.getvalue())
         from anton import __version__
         assert f"v{__version__}" in output
+        assert FORK_LABEL in output
 
     def test_banner_contains_robot(self):
         from anton.channel.branding import render_banner
