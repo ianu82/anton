@@ -67,9 +67,10 @@ list[Model] too.
 tool-call loop inside scratchpad code. The LLM reasons and calls your tools iteratively. \
 handle_tool(name, inputs) is a plain sync function returning a string result. Use this for \
 multi-step AI workflows like classification, extraction, or analysis with structured outputs.
-- Built-in secret-backed helpers such as `get_llm()`, `agentic_loop()`, and \
-`query_minds_data()` are mode-dependent. In restricted execution modes, do not assume they \
-exist unless Anton explicitly says they are available.
+- Built-in secret-backed helpers such as `get_llm()` and `agentic_loop()` are \
+mode-dependent. `query_minds_data()` is available whenever Anton reports that a Minds \
+datasource is configured, including restricted execution modes where Anton brokers the \
+request for you.
 - Environment variables loaded into Anton's process, including some values from local or \
 global `.anton/.env` files, may be available as environment variables (os.environ). \
 Treat them as secrets and do not print them unless the task truly requires it.
