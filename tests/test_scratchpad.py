@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 import anton.scratchpad as scratchpad_module
 from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
+
+pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
 
 
 class TestScratchpadBasicExecution:
@@ -512,8 +516,8 @@ class TestScratchpadVenv:
         finally:
             await pad.close()
 
-    async def test_system_packages_available(self):
-        """System site-packages should be accessible (e.g. pydantic from parent env)."""
+    async def test_runtime_overlay_can_import_from_attached_runtime(self):
+        """The overlay should import packages exposed by the attached managed runtime."""
         pad = Scratchpad(name="venv-syspkg")
         await pad.start()
         try:
@@ -525,98 +529,83 @@ class TestScratchpadVenv:
 
 
 class TestVenvPersistence:
-    """Tests for persistent venv recycling across sessions."""
+    """Tests for persistent overlay recycling across sessions."""
 
     async def test_venv_recycled_on_restart(self, tmp_path):
-        """Close + reopen same name → packages remembered."""
-        import shutil
+        """Close + reopen same name → overlay metadata is reused."""
         venvs_base = tmp_path / "venvs"
         pad = Scratchpad(name="recycle", _venvs_base=venvs_base)
         await pad.start()
-        await pad.install_packages(["cowsay"])
-        venv_dir = pad._venv_dir
+        pad._installed_packages.add("overlaypkg")
+        pad._write_overlay_metadata()
+        overlay_dir = pad._venv_dir
         await pad.close()
 
-        # Venv persists on disk with requirements.txt
-        assert os.path.isdir(venv_dir)
-        req_path = os.path.join(venv_dir, "requirements.txt")
-        assert os.path.isfile(req_path)
-        with open(req_path) as f:
-            assert "cowsay" in f.read()
+        assert os.path.isdir(overlay_dir)
+        metadata_path = Path(overlay_dir) / ".anton-overlay.json"
+        assert metadata_path.is_file()
 
-        # Reopen — should recycle the existing venv
         pad2 = Scratchpad(name="recycle", _venvs_base=venvs_base)
         await pad2.start()
         try:
-            assert "cowsay" in pad2._installed_packages
-            cell = await pad2.execute("import cowsay; print('ok')")
-            assert cell.error is None
-            assert cell.stdout.strip() == "ok"
+            assert "overlaypkg" in pad2._installed_packages
+            assert pad2._venv_dir == overlay_dir
         finally:
             await pad2.close()
-            shutil.rmtree(venvs_base, ignore_errors=True)
 
-    async def test_venv_nuked_on_version_mismatch(self, tmp_path, monkeypatch):
-        """Wrong .python_version → recreates venv."""
-        import shutil
+    async def test_overlay_rebuilt_on_profile_switch(self, tmp_path):
+        """Switching profiles should rebuild the overlay against the new runtime."""
         venvs_base = tmp_path / "venvs"
-        pad = Scratchpad(name="ver-mismatch", _venvs_base=venvs_base)
-        await pad.start()
-        venv_dir = pad._venv_dir
-        await pad.close()
-
-        # Tamper with the .python_version file
-        ver_path = os.path.join(venv_dir, ".python_version")
-        with open(ver_path, "w") as f:
-            f.write("2.7\n")
-
-        # Reopen — should detect mismatch, nuke, and recreate
-        pad2 = Scratchpad(name="ver-mismatch", _venvs_base=venvs_base)
-        await pad2.start()
+        mgr = ScratchpadManager(workspace_path=tmp_path)
+        mgr._venvs_base = venvs_base
         try:
-            assert pad2._venv_dir is not None
-            # The new venv should have the correct version
-            with open(os.path.join(pad2._venv_dir, ".python_version")) as f:
-                saved = f.read().strip()
-            import sys as _sys
-            assert saved == f"{_sys.version_info.major}.{_sys.version_info.minor}"
-        finally:
-            await pad2.close()
-            shutil.rmtree(venvs_base, ignore_errors=True)
+            pad = await mgr.get_or_create("switcher", profile="base")
+            base_runtime = pad._runtime_path
+            base_overlay = pad._venv_dir
+            await pad.install_packages(["cowsay"])
 
-    async def test_venv_nuked_on_corruption(self, tmp_path):
-        """Delete Python binary → recreates venv."""
-        import shutil
+            same_pad = await mgr.get_or_create("switcher", profile="ml")
+
+            assert same_pad is pad
+            assert same_pad._profile == "ml"
+            assert same_pad._runtime_path != base_runtime
+            assert same_pad._venv_dir == base_overlay
+            assert "cowsay" not in same_pad._installed_packages
+
+            metadata_path = Path(same_pad._venv_dir) / ".anton-overlay.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            assert metadata["profile"] == "ml"
+        finally:
+            await mgr.close_all()
+
+    async def test_overlay_recreated_on_corruption(self, tmp_path):
+        """Deleting the overlay Python binary should trigger recreation."""
         venvs_base = tmp_path / "venvs"
         pad = Scratchpad(name="corrupt", _venvs_base=venvs_base)
         await pad.start()
-        venv_dir = pad._venv_dir
+        overlay_dir = pad._venv_dir
         python_path = pad._venv_python
         await pad.close()
 
-        # Delete the Python binary to simulate corruption
         os.remove(python_path)
 
-        # Reopen — should detect corruption, nuke, and recreate
         pad2 = Scratchpad(name="corrupt", _venvs_base=venvs_base)
         await pad2.start()
         try:
             assert pad2._venv_dir is not None
-            assert pad2._venv_python is not None
+            assert os.path.isdir(pad2._venv_dir)
             assert os.path.isfile(pad2._venv_python)
+            assert pad2._venv_dir == overlay_dir
             cell = await pad2.execute("print('alive')")
             assert cell.error is None
             assert cell.stdout.strip() == "alive"
         finally:
             await pad2.close()
-            shutil.rmtree(venvs_base, ignore_errors=True)
 
     async def test_remove_deletes_persistent_venv(self, tmp_path):
-        """ScratchpadManager.remove() fully deletes the persistent venv dir."""
-        import shutil
+        """ScratchpadManager.remove() fully deletes the persistent overlay dir."""
         venvs_base = tmp_path / "venvs"
         mgr = ScratchpadManager(workspace_path=tmp_path)
-        # Override base to use our tmp dir
         mgr._venvs_base = venvs_base
         try:
             pad = await mgr.get_or_create("deleteme")
@@ -626,23 +615,20 @@ class TestVenvPersistence:
             assert not os.path.exists(venv_dir)
         finally:
             await mgr.close_all()
-            shutil.rmtree(venvs_base, ignore_errors=True)
 
-    async def test_requirements_saved_on_close(self, tmp_path):
-        """requirements.txt is written when pad has installed packages."""
-        import shutil
-        venvs_base = tmp_path / "venvs"
-        pad = Scratchpad(name="req-save", _venvs_base=venvs_base)
+    async def test_missing_import_returns_guidance(self):
+        """Missing imports should return structured guidance instead of auto-installing."""
+        pad = Scratchpad(name="missing-import")
         await pad.start()
-        await pad.install_packages(["cowsay"])
-        await pad.close()
-
-        req_path = os.path.join(str(venvs_base / "req-save"), "requirements.txt")
-        assert os.path.isfile(req_path)
-        with open(req_path) as f:
-            contents = f.read()
-        assert "cowsay" in contents
-        shutil.rmtree(venvs_base, ignore_errors=True)
+        try:
+            cell = await pad.execute("import sklearn_missing_package")
+            assert cell.error is not None
+            assert "Next action:" in cell.error
+            assert cell.package_missing is not None
+            assert cell.package_missing["package"] == "sklearn_missing_package"
+            assert cell.package_missing["import_name"] == "sklearn_missing_package"
+        finally:
+            await pad.close()
 
 
 class TestScratchpadInstall:

@@ -159,9 +159,11 @@ SCRATCHPAD_TOOL = {
         "Packages persist across resets.\n\n"
         "Use print() to produce output. The scratchpad runs as a local Python subprocess "
         "with Anton's normal process privileges, not a security sandbox. "
-        "Host Python packages may be available by default. "
-        "Include a 'packages' array on exec calls for any libraries your code needs — "
-        "they'll be auto-installed before the cell runs (already-installed ones are skipped).\n"
+        "Scratchpads use Anton-managed runtime profiles rather than ambient host packages. "
+        "The default profile is `base`, and you can pass `profile` on exec calls to select "
+        "another managed runtime such as `ml` or `browser`. "
+        "Include a 'packages' array on exec calls for explicit overlay installs when you "
+        "need a package outside the selected managed profile.\n"
         "get_llm() returns a pre-configured LLM client (sync) — call "
         "llm.complete(system=..., messages=[...]) for AI-powered computation.\n"
         "llm.generate_object(MyModel, system=..., messages=[...]) extracts structured "
@@ -199,6 +201,10 @@ SCRATCHPAD_TOOL = {
                 "description": "Package names needed by this cell (exec or install). "
                 "Listed after code so you know exactly what to include. "
                 "Already-installed packages are skipped automatically.",
+            },
+            "profile": {
+                "type": "string",
+                "description": "Managed runtime profile to use for this scratchpad (default: base).",
             },
             "one_line_description": {
                 "type": "string",
@@ -308,7 +314,8 @@ async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
     if not code or not code.strip():
         return "No code provided."
 
-    pad = await session._scratchpads.get_or_create(name)
+    profile = str(tc_input.get("profile", "")).strip() or "base"
+    pad = await session._scratchpads.get_or_create(name, profile=profile)
 
     # Auto-install packages before running the cell
     packages = tc_input.get("packages", [])
@@ -353,6 +360,15 @@ def format_cell_result(cell) -> str:
         parts.append(f"[stderr]\n{cell.stderr}")
     if cell.error:
         parts.append(f"[error]\n{cell.error}")
+    if cell.package_missing:
+        missing = cell.package_missing
+        parts.append(
+            "[package_missing]\n"
+            f"package={missing.get('package', '')}\n"
+            f"import={missing.get('import_name', '')}\n"
+            f"suggested_profile={missing.get('suggested_profile', '')}\n"
+            f"next_action={missing.get('next_action', '')}"
+        )
     if not parts:
         return "Code executed successfully (no output)."
     return "\n".join(parts)
@@ -406,7 +422,8 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         packages = tc_input.get("packages", [])
         if not packages:
             return "No packages specified."
-        pad = await session._scratchpads.get_or_create(name)
+        profile = str(tc_input.get("profile", "")).strip() or "base"
+        pad = await session._scratchpads.get_or_create(name, profile=profile)
         return await pad.install_packages(packages)
 
     else:

@@ -12,7 +12,15 @@ import venv
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from anton.runtime import log_package_event
+from anton.runtime import (
+    default_runtime_profile,
+    ensure_runtime,
+    load_runtime_profile,
+    log_package_event,
+    runtime_lock_hash,
+    runtime_packages_for_profile,
+    runtime_site_packages_path,
+)
 
 _CELL_TIMEOUT_DEFAULT = 120        # Default total timeout when no estimate given
 _CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before killing
@@ -53,6 +61,7 @@ class Cell:
     description: str = ""
     estimated_time: str = ""
     logs: str = ""
+    package_missing: dict[str, str] | None = None
 
 
 @dataclass
@@ -68,6 +77,9 @@ class Scratchpad:
     _venv_python: str | None = field(default=None, repr=False)
     _installed_packages: set[str] = field(default_factory=set, repr=False)
     _workspace_path: Path | None = field(default=None, repr=False)
+    _profile: str = field(default_factory=default_runtime_profile, repr=False)
+    _runtime_path: Path | None = field(default=None, repr=False)
+    _runtime_lock_hash: str = field(default="", repr=False)
     _venvs_base: Path = field(
         default_factory=lambda: Path("~/.anton/scratchpad-venvs").expanduser(),
         repr=False,
@@ -75,47 +87,100 @@ class Scratchpad:
 
     _MAX_VENV_RETRIES = 3
 
+    def _overlay_dir(self) -> Path:
+        override = os.environ.get("ANTON_SCRATCHPAD_BASE")
+        if override:
+            return Path(override).expanduser() / self.name
+        return self._venvs_base / self.name
+
+    def _overlay_metadata_path(self) -> Path:
+        return self._overlay_dir() / ".anton-overlay.json"
+
+    def _set_venv_paths(self) -> None:
+        self._venv_dir = str(self._overlay_dir())
+        if sys.platform == "win32":
+            self._venv_python = os.path.join(self._venv_dir, "Scripts", "python.exe")
+        else:
+            self._venv_python = os.path.join(self._venv_dir, "bin", "python")
+
+    def _ensure_runtime_profile(self) -> None:
+        self._runtime_path = ensure_runtime(self._profile, workspace_path=self._workspace_path)
+        self._runtime_lock_hash = runtime_lock_hash(load_runtime_profile(self._profile))
+
+    def _load_overlay_metadata(self) -> dict | None:
+        path = self._overlay_metadata_path()
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _write_overlay_metadata(self) -> None:
+        if self._venv_dir is None:
+            return
+        payload = {
+            "profile": self._profile,
+            "runtime_lock_hash": self._runtime_lock_hash,
+            "installed_packages": sorted(self._installed_packages),
+        }
+        self._overlay_metadata_path().write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _overlay_matches_runtime(self, metadata: dict | None) -> bool:
+        if metadata is None:
+            return False
+        return (
+            str(metadata.get("profile", "")) == self._profile
+            and str(metadata.get("runtime_lock_hash", "")) == self._runtime_lock_hash
+        )
+
+    def _attach_runtime_site_packages(self) -> None:
+        if self._venv_dir is None or self._runtime_path is None:
+            return
+
+        child_site = None
+        for dirpath, dirnames, _ in os.walk(self._venv_dir):
+            if "site-packages" in dirnames:
+                child_site = Path(dirpath) / "site-packages"
+                break
+        if child_site is None:
+            raise RuntimeError(f"Could not locate overlay site-packages in {self._venv_dir}")
+
+        runtime_site = runtime_site_packages_path(self._runtime_path)
+        (child_site / "_anton_runtime.pth").write_text(f"{runtime_site}\n", encoding="utf-8")
+
     def _ensure_venv(self) -> None:
-        """Create a lightweight per-scratchpad venv (idempotent).
+        """Create or reuse a persistent overlay venv attached to an Anton runtime."""
+        self._ensure_runtime_profile()
+        self._set_venv_paths()
 
-        Uses system_site_packages=True so the real system packages are visible.
-        If we're running inside a parent venv, we also drop a .pth file so the
-        parent venv's site-packages are visible in the child.
-
-        If a persistent venv already exists on disk it is recycled when healthy.
-        If the venv is broken (stale symlinks, missing Python binary, version
-        mismatch), it is deleted and recreated from scratch. Gives up after
-        _MAX_VENV_RETRIES.
-        """
-        if self._venv_dir is not None and self._verify_venv_python():
+        metadata = self._load_overlay_metadata()
+        if self._verify_venv_python() and self._overlay_matches_runtime(metadata):
+            installed = metadata.get("installed_packages", []) if metadata else []
+            self._installed_packages = {str(item).lower() for item in installed}
+            self._attach_runtime_site_packages()
             return
-
-        # Try to recycle a persistent venv from a previous session.
-        venv_path = self._venvs_base / self.name
-        if venv_path.is_dir() and self._try_recycle_venv(venv_path):
-            return
-
-        # Recycling failed or no prior venv — nuke leftovers and create fresh.
-        if venv_path.is_dir():
-            self._nuke_venv()
 
         last_error: Exception | None = None
-        for attempt in range(1, self._MAX_VENV_RETRIES + 1):
+        for _attempt in range(1, self._MAX_VENV_RETRIES + 1):
             try:
+                self._nuke_venv()
                 self._create_venv()
                 if self._verify_venv_python():
-                    self._setup_parent_site_packages()
-                    self._save_python_version()
+                    self._attach_runtime_site_packages()
+                    self._write_overlay_metadata()
                     return
-                # Python binary exists but doesn't run — nuke and retry
                 raise RuntimeError(f"venv Python binary at {self._venv_python} is not functional")
             except Exception as exc:
                 last_error = exc
-                # Clean up the broken venv before retrying
                 self._nuke_venv()
 
         raise RuntimeError(
-            f"Failed to create a working Python venv after {self._MAX_VENV_RETRIES} attempts. "
+            f"Failed to create a working scratchpad overlay after {self._MAX_VENV_RETRIES} attempts. "
             f"Last error: {last_error}. "
             f"Try running: python3 -c 'print(\"ok\")' to verify your Python installation."
         )
@@ -123,11 +188,9 @@ class Scratchpad:
     @staticmethod
     def _find_uv() -> str | None:
         """Return the path to the ``uv`` binary, or *None* if unavailable."""
-        # Fast path: already on PATH
         uv = shutil.which("uv")
         if uv:
             return uv
-        # Common install locations
         if sys.platform == "win32":
             candidates = (
                 os.path.expanduser("~/.local/bin/uv.exe"),
@@ -144,41 +207,24 @@ class Scratchpad:
         return None
 
     def _create_venv(self) -> None:
-        """Allocate a venv directory and create the virtual environment.
-
-        Prefers ``uv venv`` when available — it is faster, more reliable on
-        macOS (doesn't break when Homebrew upgrades Python), and doesn't depend
-        on the ``venv`` stdlib module being functional.  Falls back to
-        ``venv.create()`` when ``uv`` isn't found.
-
-        The venv is persisted at ``{_venvs_base}/{name}`` on all platforms so
-        installed packages survive across sessions.
-        """
+        """Allocate the persistent overlay venv for this scratchpad."""
         import subprocess as _sp
 
-        self._venv_dir = str(self._venvs_base / self.name)
-        os.makedirs(self._venv_dir, exist_ok=True)
+        self._set_venv_paths()
+        Path(self._venv_dir).parent.mkdir(parents=True, exist_ok=True)
 
         uv = self._find_uv()
         if uv:
             _sp.run(
-                [uv, "venv", self._venv_dir,
-                 "--python", sys.executable,
-                 "--system-site-packages", "--seed", "--quiet"],
+                [uv, "venv", self._venv_dir, "--python", sys.executable, "--seed", "--quiet"],
                 check=True,
                 capture_output=True,
                 timeout=30,
             )
         else:
-            venv.create(self._venv_dir, system_site_packages=True, with_pip=False, clear=True)
+            venv.create(self._venv_dir, system_site_packages=False, with_pip=False, clear=True)
 
-        if sys.platform == "win32":
-            bin_dir = os.path.join(self._venv_dir, "Scripts")
-            self._venv_python = os.path.join(bin_dir, "python.exe")
-            self._add_windows_firewall_rule()
-        else:
-            bin_dir = os.path.join(self._venv_dir, "bin")
-            self._venv_python = os.path.join(bin_dir, "python")
+        self._set_venv_paths()
 
     def _verify_venv_python(self) -> bool:
         """Check that the venv Python binary exists and can execute."""
@@ -186,9 +232,9 @@ class Scratchpad:
             return False
         if not os.path.exists(self._venv_python):
             return False
-        # Quick smoke test — run python with a trivial command
         try:
             import subprocess
+
             result = subprocess.run(
                 [self._venv_python, "-c", "print('ok')"],
                 capture_output=True,
@@ -199,131 +245,16 @@ class Scratchpad:
             return False
 
     def _nuke_venv(self) -> None:
-        """Delete the venv directory entirely so it can be recreated."""
-        if self._venv_dir is not None:
+        """Delete the overlay directory entirely so it can be recreated."""
+        overlay_dir = self._overlay_dir()
+        if overlay_dir.exists():
             try:
-                shutil.rmtree(self._venv_dir)
+                shutil.rmtree(overlay_dir)
             except OSError:
                 pass
         self._venv_dir = None
         self._venv_python = None
-
-    def _add_windows_firewall_rule(self) -> None:
-        """Add a Windows Firewall outbound-allow rule for this venv's python.exe.
-
-        Windows Firewall blocks new executables by default.  Without a rule,
-        scratchpad HTTP calls (httpx, requests, etc.) silently time out.
-        Runs silently — failures are ignored (user can add rules manually).
-        """
-        if self._venv_python is None or not os.path.isfile(self._venv_python):
-            return
-        import subprocess as _sp
-        rule_name = f"Anton Scratchpad - {self.name}"
-        try:
-            _sp.run(
-                [
-                    "netsh", "advfirewall", "firewall", "add", "rule",
-                    f"name={rule_name}", "dir=out", "action=allow",
-                    f"program={self._venv_python}",
-                ],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            pass
         self._installed_packages.clear()
-
-    def _setup_parent_site_packages(self) -> None:
-        """Make parent venv's packages visible in the child venv."""
-        if sys.prefix != sys.base_prefix:
-            import site as _site
-            parent_site = _site.getsitepackages()
-            child_site = None
-            for dirpath, dirnames, _ in os.walk(self._venv_dir):
-                if "site-packages" in dirnames:
-                    child_site = os.path.join(dirpath, "site-packages")
-                    break
-            if child_site and parent_site:
-                pth_path = os.path.join(child_site, "_parent_venv.pth")
-                with open(pth_path, "w") as f:
-                    for sp in parent_site:
-                        f.write(sp + "\n")
-
-    def _try_recycle_venv(self, venv_path: Path) -> bool:
-        """Validate and reuse a persistent venv from a previous session.
-
-        Sets internal paths, verifies the Python binary is functional, checks
-        the Python version matches, loads saved requirements, and refreshes
-        parent-site-packages links.  Returns False on any failure (caller
-        should nuke the directory and create a fresh venv).
-        """
-        try:
-            self._venv_dir = str(venv_path)
-            if sys.platform == "win32":
-                self._venv_python = os.path.join(self._venv_dir, "Scripts", "python.exe")
-            else:
-                self._venv_python = os.path.join(self._venv_dir, "bin", "python")
-
-            if not self._verify_venv_python():
-                return False
-            if not self._check_python_version():
-                return False
-            self._load_requirements()
-            self._setup_parent_site_packages()
-            return True
-        except Exception:
-            return False
-
-    def _save_requirements(self) -> None:
-        """Write installed package names to requirements.txt (best-effort)."""
-        if not self._venv_dir or not self._installed_packages:
-            return
-        try:
-            req_path = os.path.join(self._venv_dir, "requirements.txt")
-            with open(req_path, "w") as f:
-                for pkg in sorted(self._installed_packages):
-                    f.write(pkg + "\n")
-        except OSError:
-            pass
-
-    def _load_requirements(self) -> None:
-        """Read requirements.txt into _installed_packages."""
-        if not self._venv_dir:
-            return
-        req_path = os.path.join(self._venv_dir, "requirements.txt")
-        try:
-            with open(req_path) as f:
-                for line in f:
-                    pkg = line.strip()
-                    if pkg:
-                        self._installed_packages.add(pkg)
-        except FileNotFoundError:
-            pass
-
-    def _save_python_version(self) -> None:
-        """Write the current Python major.minor to .python_version."""
-        if not self._venv_dir:
-            return
-        try:
-            ver_path = os.path.join(self._venv_dir, ".python_version")
-            with open(ver_path, "w") as f:
-                f.write(f"{sys.version_info.major}.{sys.version_info.minor}\n")
-        except OSError:
-            pass
-
-    def _check_python_version(self) -> bool:
-        """Return True if .python_version matches the current Python."""
-        if not self._venv_dir:
-            return False
-        ver_path = os.path.join(self._venv_dir, ".python_version")
-        try:
-            with open(ver_path) as f:
-                saved = f.read().strip()
-            expected = f"{sys.version_info.major}.{sys.version_info.minor}"
-            return saved == expected
-        except FileNotFoundError:
-            # No version file — treat as mismatch so it gets recreated with one.
-            return False
 
     async def start(self) -> None:
         """Write the boot script to a temp file and launch the subprocess."""
@@ -340,19 +271,16 @@ class Scratchpad:
             env["ANTON_SCRATCHPAD_MODEL"] = self._coding_model
         if self._coding_provider:
             env["ANTON_SCRATCHPAD_PROVIDER"] = self._coding_provider
+        env["ANTON_RUNTIME_PROFILE"] = self._profile
         env["ANTON_SCRATCHPAD_NAME"] = self.name
         if self._workspace_path is not None:
             env["ANTON_WORKSPACE_PATH"] = str(self._workspace_path)
-        # Ensure the SDKs can find API keys under their expected names.
-        # Anton stores them as ANTON_*_API_KEY; the SDKs expect *_API_KEY.
         if "ANTHROPIC_API_KEY" not in env and "ANTON_ANTHROPIC_API_KEY" in env:
             env["ANTHROPIC_API_KEY"] = env["ANTON_ANTHROPIC_API_KEY"]
         if "OPENAI_API_KEY" not in env and "ANTON_OPENAI_API_KEY" in env:
             env["OPENAI_API_KEY"] = env["ANTON_OPENAI_API_KEY"]
         if "OPENAI_BASE_URL" not in env and "ANTON_OPENAI_BASE_URL" in env:
             env["OPENAI_BASE_URL"] = env["ANTON_OPENAI_BASE_URL"]
-        # If settings provided an explicit API key (e.g. from ~/.anton/.env or
-        # Pydantic settings), inject it so the subprocess SDK can authenticate.
         if self._coding_api_key:
             sdk_key = {
                 "anthropic": "ANTHROPIC_API_KEY",
@@ -361,33 +289,26 @@ class Scratchpad:
             }.get(self._coding_provider, "")
             if sdk_key and sdk_key not in env:
                 env[sdk_key] = self._coding_api_key
-        # Pass uv path so the boot script can use it for auto-installing
-        # missing modules (same installer that created the venv).
         uv = self._find_uv()
         if uv:
             env["ANTON_UV_PATH"] = uv
 
-        # Ensure the anton package is importable in the subprocess (needed for
-        # get_llm and skill loading). The boot script runs from a temp file, so
-        # the project root isn't on sys.path by default.
-        _anton_root = str(Path(__file__).resolve().parent.parent)
+        anton_root = str(Path(__file__).resolve().parent.parent)
         python_path = env.get("PYTHONPATH", "")
-        if _anton_root not in python_path:
-            env["PYTHONPATH"] = _anton_root + (os.pathsep + python_path if python_path else "")
+        if anton_root not in python_path:
+            env["PYTHONPATH"] = anton_root + (os.pathsep + python_path if python_path else "")
 
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                self._venv_python, path,
+                self._venv_python,
+                path,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                # Own session so os.killpg() kills the whole process tree
-                # (grandchildren spawned by user code, pip installs, etc.)
                 start_new_session=(sys.platform != "win32"),
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
-            # Python binary is missing or broken — nuke venv and raise
             self._nuke_venv()
             raise RuntimeError(
                 f"Failed to start scratchpad: {exc}. "
@@ -402,11 +323,7 @@ class Scratchpad:
         estimated_time: str = "",
         estimated_seconds: int = 0,
     ) -> Cell:
-        """Send code to the subprocess, read the JSON result, return a Cell.
-
-        Backward-compatible wrapper around execute_streaming() that drains
-        all events and returns just the final Cell.
-        """
+        """Send code to the subprocess, read the JSON result, return a Cell."""
         async for item in self.execute_streaming(
             code,
             description=description,
@@ -415,7 +332,6 @@ class Scratchpad:
         ):
             if isinstance(item, Cell):
                 return item
-        # Should not reach here, but just in case
         return Cell(code=code, stdout="", stderr="", error="No result produced.")
 
     async def execute_streaming(
@@ -427,12 +343,7 @@ class Scratchpad:
         estimated_seconds: int = 0,
         cancel_event: asyncio.Event | None = None,
     ):
-        """Async generator that sends code and yields progress strings and a final Cell.
-
-        Yields:
-            str — progress messages from progress() calls in the cell code
-            Cell — the final execution result (always the last item)
-        """
+        """Async generator that sends code and yields progress strings and a final Cell."""
         if self._proc is None or self._proc.returncode is not None:
             yield Cell(
                 code=code,
@@ -458,7 +369,7 @@ class Scratchpad:
                 cancel_event=cancel_event,
             ):
                 if isinstance(item, str):
-                    yield item  # progress message
+                    yield item
                 else:
                     result_data = item
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
@@ -489,10 +400,6 @@ class Scratchpad:
         if result_data is None:
             result_data = {"stdout": "", "stderr": "", "error": "Process exited unexpectedly."}
 
-        # Track packages that the subprocess auto-installed on ModuleNotFoundError
-        for pkg in result_data.get("auto_installed") or []:
-            self._installed_packages.add(pkg.lower())
-
         cell = Cell(
             code=code,
             stdout=result_data.get("stdout", ""),
@@ -501,6 +408,7 @@ class Scratchpad:
             description=description,
             estimated_time=estimated_time,
             logs=result_data.get("logs", ""),
+            package_missing=result_data.get("missing_import"),
         )
         self.cells.append(cell)
         yield cell
@@ -512,19 +420,7 @@ class Scratchpad:
         inactivity_timeout: float = _CELL_INACTIVITY_TIMEOUT,
         cancel_event: asyncio.Event | None = None,
     ):
-        """Async generator that reads lines from stdout until result delimiters.
-
-        Yields:
-            str — progress messages (lines starting with _PROGRESS_MARKER)
-            dict — the final JSON result (always the last item)
-
-        Raises asyncio.TimeoutError with a descriptive message.
-        Raises asyncio.CancelledError if cancel_event is set.
-
-        After a progress() call is received, the inactivity window is extended
-        to _CELL_INACTIVITY_AFTER_PROGRESS (60s) so that long-running work
-        that signals liveness isn't killed prematurely.
-        """
+        """Async generator that reads lines from stdout until result delimiters."""
         import time as _time
 
         lines: list[str] = []
@@ -538,9 +434,7 @@ class Scratchpad:
             elapsed = _time.monotonic() - start
             remaining_total = total_timeout - elapsed
             if remaining_total <= 0:
-                raise asyncio.TimeoutError(
-                    f"Cell timed out after {total_timeout:.0f}s total"
-                )
+                raise asyncio.TimeoutError(f"Cell timed out after {total_timeout:.0f}s total")
 
             line_timeout = min(current_inactivity, remaining_total)
             try:
@@ -549,7 +443,6 @@ class Scratchpad:
                     timeout=line_timeout,
                 )
             except asyncio.TimeoutError:
-                # Determine which timeout was hit
                 elapsed_now = _time.monotonic() - start
                 if elapsed_now >= total_timeout - 0.5:
                     raise asyncio.TimeoutError(
@@ -565,13 +458,8 @@ class Scratchpad:
                 return
 
             line = raw.decode().rstrip("\r\n")
-
-            # Progress marker — yield to caller, don't store.
-            # Extend inactivity window: the cell is actively working.
             if line.startswith(_PROGRESS_MARKER):
-                current_inactivity = max(
-                    current_inactivity, _CELL_INACTIVITY_AFTER_PROGRESS,
-                )
+                current_inactivity = max(current_inactivity, _CELL_INACTIVITY_AFTER_PROGRESS)
                 message = line[len(_PROGRESS_MARKER):].strip()
                 yield message
                 continue
@@ -607,6 +495,15 @@ class Scratchpad:
                 parts.append(f"[stderr]\n{cell.stderr}")
             if cell.error:
                 parts.append(f"[error]\n{cell.error}")
+            if cell.package_missing:
+                missing = cell.package_missing
+                parts.append(
+                    "[package_missing]\n"
+                    f"package={missing.get('package', '')}\n"
+                    f"import={missing.get('import_name', '')}\n"
+                    f"suggested_profile={missing.get('suggested_profile', '')}\n"
+                    f"next_action={missing.get('next_action', '')}"
+                )
             if not cell.stdout and not cell.logs and not cell.stderr and not cell.error:
                 parts.append("(no output)")
         return "\n".join(parts)
@@ -615,12 +512,10 @@ class Scratchpad:
     def _truncate_output(text: str, max_lines: int = 20, max_chars: int = 2000) -> str:
         """Truncate output to *max_lines* / *max_chars*, whichever is shorter."""
         lines = text.split("\n")
-        # Apply line limit
         if len(lines) > max_lines:
             kept = "\n".join(lines[:max_lines])
             remaining = len(lines) - max_lines
             return kept + f"\n... ({remaining} more lines)"
-        # Apply char limit (don't cut mid-line)
         if len(text) > max_chars:
             total = 0
             kept_lines: list[str] = []
@@ -634,7 +529,6 @@ class Scratchpad:
 
     def render_notebook(self) -> str:
         """Return a clean markdown notebook-style summary of all cells."""
-        # Filter out empty/whitespace-only cells
         numbered: list[tuple[int, Cell]] = []
         idx = 0
         for cell in self.cells:
@@ -656,10 +550,8 @@ class Scratchpad:
             parts.append(f"```python\n{cell.code}\n```\n")
 
             if cell.error:
-                # Show only the last traceback line
                 last_line = cell.error.strip().split("\n")[-1]
                 parts.append(f"**Error:** `{last_line}`")
-                # If there was partial output before the error, show it
                 if cell.stdout:
                     truncated = self._truncate_output(cell.stdout.rstrip("\n"))
                     parts.append(f"**Partial output:**\n```\n{truncated}\n```\n")
@@ -677,17 +569,11 @@ class Scratchpad:
         return "\n".join(parts)
 
     def _compact_cells(self) -> bool:
-        """Collapse old cells into a single summary cell to reduce context size.
-
-        Keeps the most recent _KEEP_RECENT cells intact.  Older cells are
-        replaced by one summary cell with a one-line-per-cell digest.
-
-        Returns True if compaction actually happened.
-        """
+        """Collapse old cells into a single summary cell to reduce context size."""
         if len(self.cells) <= _KEEP_RECENT + 1:
             return False
 
-        to_compact = self.cells[: -_KEEP_RECENT]
+        to_compact = self.cells[:-_KEEP_RECENT]
         recent = self.cells[-_KEEP_RECENT:]
 
         summary_lines: list[str] = []
@@ -700,10 +586,7 @@ class Scratchpad:
                 first_line = output.strip().split("\n")[0][:120]
             summary_lines.append(f"  [{status}] {desc}: {first_line}")
 
-        summary_text = (
-            f"# Compacted {len(to_compact)} earlier cells:\n"
-            + "\n".join(summary_lines)
-        )
+        summary_text = f"# Compacted {len(to_compact)} earlier cells:\n" + "\n".join(summary_lines)
         summary_cell = Cell(
             code="# (compacted — see summary above)",
             stdout=summary_text,
@@ -715,12 +598,7 @@ class Scratchpad:
         return True
 
     async def cancel_running(self) -> None:
-        """Kill the current execution and restart the subprocess.
-
-        Called when the user cancels (ESC / Ctrl-C) during a running cell.
-        Kills the entire process tree, records a cancelled cell, then restarts
-        so the scratchpad is ready for the next use.
-        """
+        """Kill the current execution and restart the subprocess."""
         if self._proc is None or self._proc.returncode is not None:
             return
         self._kill_tree()
@@ -728,28 +606,26 @@ class Scratchpad:
             await asyncio.wait_for(self._proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass
-        # Record the cancelled execution
-        self.cells.append(Cell(
-            code="# (cancelled by user)",
-            stdout="",
-            stderr="",
-            error="Cancelled by user.",
-            description="Cancelled",
-        ))
-        # Restart so the pad is usable again
+        self.cells.append(
+            Cell(
+                code="# (cancelled by user)",
+                stdout="",
+                stderr="",
+                error="Cancelled by user.",
+                description="Cancelled",
+            )
+        )
         self._proc = None
         await self.start()
 
     async def _stop_process(self) -> None:
-        """Kill the subprocess and delete the boot script, but keep the venv."""
+        """Kill the subprocess and delete the boot script, but keep the overlay."""
         if self._proc is not None and self._proc.returncode is None:
             try:
                 self._kill_tree()
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except (ProcessLookupError, asyncio.TimeoutError):
                 pass
-        # Close transport pipes to prevent "Event loop is closed" noise
-        # from __del__ during Python shutdown.
         if self._proc is not None:
             for attr in ("stdin", "stdout", "stderr"):
                 pipe = getattr(self._proc, attr, None)
@@ -769,12 +645,11 @@ class Scratchpad:
             return
         pid = self._proc.pid
         if sys.platform != "win32":
-            # Kill the entire process group (subprocess + grandchildren)
             import signal
+
             try:
                 os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
-                # Fallback: kill just the direct child
                 try:
                     self._proc.kill()
                 except ProcessLookupError:
@@ -783,35 +658,28 @@ class Scratchpad:
             self._proc.kill()
 
     async def reset(self) -> None:
-        """Kill the process, clear cells, restart.
-
-        If the venv is healthy, it's reused (installed packages survive).
-        If the venv is broken, it's deleted and recreated from scratch.
-        """
+        """Kill the process, clear cells, restart."""
         await self._stop_process()
         self.cells.clear()
-        # If the venv Python is broken, nuke it so _ensure_venv recreates it
         if not self._verify_venv_python():
             self._nuke_venv()
         await self.start()
 
     async def close(self) -> None:
-        """Kill the process and clean up the boot script temp file.
-
-        The venv is preserved on disk so installed packages survive across
-        sessions. A ``requirements.txt`` is saved to record what was installed.
-        """
+        """Kill the process and clean up the boot script temp file, but keep the overlay."""
         await self._stop_process()
-        if self._venv_dir is not None:
-            self._save_requirements()
-            self._venv_dir = None
-            self._venv_python = None
+        self._venv_dir = None
+        self._venv_python = None
+
+    async def destroy(self) -> None:
+        """Kill the process and remove the persistent overlay."""
+        await self._stop_process()
+        self._nuke_venv()
 
     async def install_packages(self, packages: list[str], *, source: str = "scratchpad.install") -> str:
-        """Install packages into the scratchpad's venv via pip (or uv pip)."""
+        """Install packages into the scratchpad overlay via pip (or uv pip)."""
         if not packages:
             return "No packages specified."
-        # Skip packages we've already installed in this scratchpad
         needed = [p for p in packages if p.lower() not in self._installed_packages]
         if not needed:
             return "All packages already installed."
@@ -867,10 +735,19 @@ class Scratchpad:
                     workspace_path=self._workspace_path,
                 )
             return f"Install failed (exit {proc.returncode}):\n{output}"
-        # Track successfully installed packages
         for p in needed:
             self._installed_packages.add(p.lower())
+        self._write_overlay_metadata()
         return output
+
+    async def ensure_profile(self, profile: str) -> None:
+        desired = profile or default_runtime_profile()
+        if desired == self._profile:
+            return
+        await self._stop_process()
+        self.cells.clear()
+        self._profile = desired
+        self._nuke_venv()
 
 
 class ScratchpadManager:
@@ -896,13 +773,18 @@ class ScratchpadManager:
 
     @staticmethod
     def probe_packages() -> list[str]:
-        """Return sorted list of installed package distribution names."""
-        from importlib.metadata import distributions
+        """Return sorted package names from Anton's default managed runtime profile."""
+        return sorted(runtime_packages_for_profile(default_runtime_profile()))
 
-        return sorted({d.metadata["Name"] for d in distributions()})
+    def available_packages(self) -> list[str]:
+        packages = set(self._available_packages)
+        for pad in self._pads.values():
+            packages.update(pad._installed_packages)
+        return sorted(packages)
 
-    async def get_or_create(self, name: str) -> Scratchpad:
+    async def get_or_create(self, name: str, *, profile: str | None = None) -> Scratchpad:
         """Return existing pad or create + start a new one."""
+        desired_profile = profile or default_runtime_profile()
         if name not in self._pads:
             pad = Scratchpad(
                 name=name,
@@ -910,19 +792,23 @@ class ScratchpadManager:
                 _coding_model=self._coding_model,
                 _coding_api_key=self._coding_api_key,
                 _workspace_path=self._workspace_path,
+                _profile=desired_profile,
                 _venvs_base=self._venvs_base,
             )
             await pad.start()
             self._pads[name] = pad
+        else:
+            await self._pads[name].ensure_profile(desired_profile)
+            if self._pads[name]._proc is None or self._pads[name]._proc.returncode is not None:
+                await self._pads[name].start()
         return self._pads[name]
 
     async def remove(self, name: str) -> str:
-        """Kill and fully delete a scratchpad (including its persistent venv)."""
+        """Kill and delete a scratchpad."""
         pad = self._pads.pop(name, None)
         if pad is None:
             return f"No scratchpad named '{name}'."
-        await pad._stop_process()
-        pad._nuke_venv()
+        await pad.destroy()
         return f"Scratchpad '{name}' removed."
 
     def list_pads(self) -> list[str]:

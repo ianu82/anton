@@ -61,6 +61,24 @@ class InstalledRuntime:
 
 
 _PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
+_KNOWN_IMPORT_ALIASES = {
+    "PIL": ("Pillow", "base"),
+    "PIL.Image": ("Pillow", "base"),
+    "arrow": ("pyarrow", "base"),
+    "bs4": ("beautifulsoup4", "base"),
+    "duckdb": ("duckdb", "base"),
+    "fitz": ("PyMuPDF", "base"),
+    "httpx": ("httpx", "base"),
+    "lxml": ("lxml", "base"),
+    "openpyxl": ("openpyxl", "base"),
+    "pandas": ("pandas", "base"),
+    "playwright": ("playwright", "browser"),
+    "plotly": ("plotly", "base"),
+    "pyarrow": ("pyarrow", "base"),
+    "scipy": ("scipy", "base"),
+    "sklearn": ("scikit-learn", "ml"),
+    "statsmodels": ("statsmodels", "base"),
+}
 
 
 def telemetry_dir() -> Path:
@@ -313,6 +331,20 @@ def runtime_site_packages_path(runtime_path: Path) -> Path:
 
 def runtime_packages_for_profile(profile_name: str) -> list[str]:
     return [_package_name(spec) for spec in load_runtime_profile(profile_name).packages]
+
+
+def suggest_package_for_import(import_name: str) -> tuple[str, str | None]:
+    alias = _KNOWN_IMPORT_ALIASES.get(import_name)
+    if alias is not None:
+        return alias
+
+    normalized = import_name.split(".", 1)[0]
+    for profile in list_runtime_profiles():
+        for spec in profile.packages:
+            package_name = _package_name(spec)
+            if package_name == normalized.lower():
+                return spec.split("==", 1)[0], profile.name
+    return normalized, None
 
 
 def default_runtime_profile() -> str:

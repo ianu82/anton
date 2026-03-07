@@ -7,6 +7,8 @@ import pytest
 from anton.chat import SCRATCHPAD_TOOL, ChatSession
 from anton.llm.provider import LLMResponse, StreamComplete, StreamToolResult, ToolCall, Usage
 
+pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
+
 
 def _text_response(text: str) -> LLMResponse:
     return LLMResponse(
@@ -44,6 +46,7 @@ class TestScratchpadToolDefinition:
         assert "name" in props
         assert "code" in props
         assert "packages" in props
+        assert "profile" in props
         assert SCRATCHPAD_TOOL["input_schema"]["required"] == ["action", "name"]
 
     def test_tool_has_install_action(self):

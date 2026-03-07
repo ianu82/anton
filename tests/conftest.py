@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import site
+import sysconfig
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,3 +27,11 @@ def make_llm_response():
         )
 
     return _factory
+
+
+@pytest.fixture()
+def scratchpad_runtime_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTON_RUNTIME_HOME", str(tmp_path / "runtimes"))
+    monkeypatch.setenv("ANTON_SCRATCHPAD_BASE", str(tmp_path / "scratchpad-venvs"))
+    site_paths = [sysconfig.get_paths()["purelib"], site.getusersitepackages()]
+    monkeypatch.setenv("ANTON_RUNTIME_TEST_SITE_PACKAGES", os.pathsep.join(site_paths))
