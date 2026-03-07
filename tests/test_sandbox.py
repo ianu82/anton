@@ -14,11 +14,10 @@ from anton.sandbox import build_sandbox_launch, ensure_execution_mode_supported
 
 
 class TestSandboxSupport:
-    def test_windows_rejects_safe_modes(self, monkeypatch):
+    def test_windows_supports_safe_modes(self, monkeypatch):
         monkeypatch.setattr(sandbox_module.sys, "platform", "win32")
-
-        with pytest.raises(RuntimeError, match="not supported on Windows"):
-            ensure_execution_mode_supported(ExecutionMode.READ_ONLY)
+        assert ensure_execution_mode_supported(ExecutionMode.READ_ONLY) is ExecutionMode.READ_ONLY
+        assert ensure_execution_mode_supported(ExecutionMode.WORKSPACE_WRITE) is ExecutionMode.WORKSPACE_WRITE
 
     def test_windows_launch_spec_uses_launcher_module(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sandbox_module.sys, "platform", "win32")

@@ -41,6 +41,7 @@ What happens next is the interesting part. Anton doesn't have any particular ski
 That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result.
 
 Anton’s scratchpad runs as a local Python subprocess with your normal user privileges. It is convenient and persistent, but it is not a security sandbox.
+When you want tighter containment, Anton also supports `workspace_write` and `read_only` execution modes that restrict network, ambient secrets, and workspace access on macOS, Linux, and Windows.
 
 <img width="800"  alt="image" src="https://github.com/user-attachments/assets/39ec8b3b-65e8-4e23-8861-c649969d4e1c" />
 

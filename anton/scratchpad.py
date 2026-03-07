@@ -84,6 +84,7 @@ class Scratchpad:
     _runtime_path: Path | None = field(default=None, repr=False)
     _runtime_lock_hash: str = field(default="", repr=False)
     _execution_policy: ScratchpadExecutionPolicy = field(default_factory=ScratchpadExecutionPolicy, repr=False)
+    _sandbox_tmp_dir: str | None = field(default=None, repr=False)
     _venvs_base: Path = field(
         default_factory=lambda: Path("~/.anton/scratchpad-venvs").expanduser(),
         repr=False,
@@ -256,6 +257,7 @@ class Scratchpad:
 
     def _nuke_venv(self) -> None:
         """Delete the overlay directory entirely so it can be recreated."""
+        self._cleanup_boot_artifacts()
         overlay_dir = self._overlay_dir()
         if overlay_dir.exists():
             try:
@@ -266,14 +268,44 @@ class Scratchpad:
         self._venv_python = None
         self._installed_packages.clear()
 
+    def _write_boot_script(self) -> tuple[str, Path | None]:
+        boot_code = _BOOT_SCRIPT_PATH.read_text()
+        if self._execution_policy.mode is ExecutionMode.FULL_TRUST:
+            fd, path = tempfile.mkstemp(suffix=".py", prefix="anton_scratchpad_")
+            os.write(fd, boot_code.encode())
+            os.close(fd)
+            return path, None
+
+        if self._venv_dir is None:
+            raise RuntimeError("Scratchpad overlay directory is not initialized.")
+
+        tmp_root = Path(self._venv_dir) / ".anton-run"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix="boot_", dir=tmp_root))
+        path = run_dir / "scratchpad_boot.py"
+        path.write_text(boot_code, encoding="utf-8")
+        self._sandbox_tmp_dir = str(run_dir)
+        return str(path), run_dir
+
+    def _cleanup_boot_artifacts(self) -> None:
+        if self._boot_path is not None:
+            try:
+                os.unlink(self._boot_path)
+            except OSError:
+                pass
+            self._boot_path = None
+        if self._sandbox_tmp_dir is not None:
+            try:
+                shutil.rmtree(self._sandbox_tmp_dir)
+            except OSError:
+                pass
+            self._sandbox_tmp_dir = None
+
     async def start(self) -> None:
         """Write the boot script to a temp file and launch the subprocess."""
         self._ensure_venv()
 
-        boot_code = _BOOT_SCRIPT_PATH.read_text()
-        fd, path = tempfile.mkstemp(suffix=".py", prefix="anton_scratchpad_")
-        os.write(fd, boot_code.encode())
-        os.close(fd)
+        path, sandbox_tmp = self._write_boot_script()
         self._boot_path = path
 
         uv = self._find_uv()
@@ -289,9 +321,10 @@ class Scratchpad:
             uv_path=uv,
         )
         if self._execution_policy.mode is not ExecutionMode.FULL_TRUST:
-            env["TMPDIR"] = self._venv_dir
-            env["TMP"] = self._venv_dir
-            env["TEMP"] = self._venv_dir
+            sandbox_tmp_str = str(sandbox_tmp or self._venv_dir)
+            env["TMPDIR"] = sandbox_tmp_str
+            env["TMP"] = sandbox_tmp_str
+            env["TEMP"] = sandbox_tmp_str
         launch = build_sandbox_launch(
             self._execution_policy.mode,
             executable=self._venv_python,
@@ -314,6 +347,7 @@ class Scratchpad:
                 start_new_session=(sys.platform != "win32"),
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
+            self._cleanup_boot_artifacts()
             self._nuke_venv()
             raise RuntimeError(
                 f"Failed to start scratchpad: {exc}. "
@@ -637,12 +671,7 @@ class Scratchpad:
                 if pipe and not pipe.is_closing() if hasattr(pipe, "is_closing") else False:
                     pipe.close()
         self._proc = None
-        if self._boot_path is not None:
-            try:
-                os.unlink(self._boot_path)
-            except OSError:
-                pass
-            self._boot_path = None
+        self._cleanup_boot_artifacts()
 
     def _kill_tree(self) -> None:
         """Kill the subprocess and all its children via process group."""
