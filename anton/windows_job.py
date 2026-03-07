@@ -6,6 +6,8 @@ from ctypes import wintypes
 
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+WAIT_OBJECT_0 = 0x00000000
+INFINITE = 0xFFFFFFFF
 
 
 class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
@@ -105,3 +107,23 @@ def resume_thread(thread_handle: int) -> None:
     result = resume(wintypes.HANDLE(thread_handle))
     if result == 0xFFFFFFFF:
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def wait_for_process_exit(process_handle: int) -> int:
+    kernel32 = _kernel32()
+    wait = kernel32.WaitForSingleObject
+    wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait.restype = wintypes.DWORD
+
+    get_exit_code = kernel32.GetExitCodeProcess
+    get_exit_code.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_exit_code.restype = wintypes.BOOL
+
+    result = wait(wintypes.HANDLE(process_handle), INFINITE)
+    if result != WAIT_OBJECT_0:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    exit_code = wintypes.DWORD()
+    if not get_exit_code(wintypes.HANDLE(process_handle), ctypes.byref(exit_code)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(exit_code.value)
