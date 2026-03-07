@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from anton.execution_policy import ExecutionMode
+from anton.path_guard import ensure_workspace_path_is_direct
 
 
 def workspace_root(session) -> Path:
@@ -13,15 +14,10 @@ def workspace_root(session) -> Path:
 
 
 def resolve_workspace_path(root: Path, raw_path: str) -> Path:
-    candidate = Path(raw_path)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve()
     try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise RuntimeError(f"Patch path escapes the workspace: {raw_path}") from exc
-    return resolved
+        return ensure_workspace_path_is_direct(root, raw_path)
+    except RuntimeError as exc:
+        raise RuntimeError(str(exc).replace("Path escapes", "Patch path escapes")) from exc
 
 
 def _ensure_text_file(path: Path) -> str:
@@ -62,8 +58,6 @@ def apply_workspace_edits(session, edits: list[dict]) -> str:
 
         path = resolve_workspace_path(root, raw_path)
         _ensure_mutation_allowed(session, target_path=path)
-        if path.is_symlink():
-            raise RuntimeError(f"Refusing to patch symlinked path: {path}")
 
         if kind == "create":
             if path.exists():

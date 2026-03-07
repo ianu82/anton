@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 import shutil
-import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from anton.execution_policy import ExecutionMode
+from anton.path_guard import assert_workspace_tree_is_direct
 from anton.windows_sandbox import WindowsSandboxConfig, windows_launcher_command
 
 
@@ -56,27 +55,6 @@ def ensure_execution_mode_supported(mode: ExecutionMode | str) -> ExecutionMode:
     raise RuntimeError(
         f"Execution mode '{resolved.value}' is not supported on platform '{sys.platform}'."
     )
-
-
-def _assert_workspace_write_safe(workspace_path: Path) -> None:
-    root = _resolve_path(workspace_path)
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        with os.scandir(current) as entries:
-            for entry in entries:
-                if entry.is_symlink():
-                    raise RuntimeError(
-                        f"workspace_write mode rejected this workspace because it contains a symlink: {entry.path}"
-                    )
-                st = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(st.st_mode):
-                    stack.append(Path(entry.path))
-                    continue
-                if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
-                    raise RuntimeError(
-                        f"workspace_write mode rejected this workspace because it contains a hard-linked file: {entry.path}"
-                    )
 
 
 def _darwin_profile(
@@ -202,8 +180,7 @@ def build_sandbox_launch(
     workspace = _resolve_path(workspace_path)
     overlay = _resolve_path(overlay_dir)
     extra_paths = [_resolve_path(path) for path in (extra_write_paths or [])]
-    if resolved is ExecutionMode.WORKSPACE_WRITE:
-        _assert_workspace_write_safe(workspace)
+    assert_workspace_tree_is_direct(workspace, mode_name=resolved.value)
 
     if sys.platform == "win32":
         return _windows_launch_spec(
