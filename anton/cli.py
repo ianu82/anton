@@ -844,6 +844,62 @@ app.add_typer(schedules_app, name="schedules")
 app.add_typer(runtime_app, name="runtime")
 
 
+@runtime_app.command("list")
+def runtime_list() -> None:
+    """List Anton-managed runtime profiles and hydrated runtimes."""
+    from anton.runtime import (
+        list_installed_runtimes,
+        list_runtime_profiles,
+        runtime_dir,
+        runtime_lock_hash,
+    )
+
+    installed = {item.profile: item for item in list_installed_runtimes() if item.anton_version == __version__}
+    table = Table(title="Anton Runtime Profiles")
+    table.add_column("Profile", style="anton.cyan")
+    table.add_column("Hydrated")
+    table.add_column("Packages", justify="right")
+    table.add_column("Lock")
+    table.add_column("Path")
+
+    for profile in list_runtime_profiles():
+        hydrated = installed.get(profile.name)
+        path = hydrated.path if hydrated is not None else runtime_dir(profile)
+        table.add_row(
+            profile.name,
+            "yes" if hydrated is not None else "no",
+            str(len(profile.packages)),
+            runtime_lock_hash(profile),
+            str(path),
+        )
+    console.print(table)
+
+
+@runtime_app.command("install")
+def runtime_install(profile: str = typer.Argument(..., help="Runtime profile name")) -> None:
+    """Hydrate an Anton-managed runtime profile."""
+    from anton.runtime import ensure_runtime
+
+    target = ensure_runtime(profile)
+    console.print(f"[anton.success]Hydrated runtime profile {profile}.[/]")
+    console.print(str(target))
+
+
+@runtime_app.command("gc")
+def runtime_gc() -> None:
+    """Remove old Anton runtime versions not used by the current Anton release."""
+    from anton.runtime import garbage_collect_runtimes
+
+    removed = garbage_collect_runtimes()
+    if not removed:
+        console.print("[dim]No old runtimes removed.[/]")
+        return
+
+    console.print(f"[anton.success]Removed {len(removed)} runtime version(s).[/]")
+    for path in removed:
+        console.print(str(path))
+
+
 @runtime_app.command("stats")
 def runtime_stats() -> None:
     """Summarize local package telemetry."""

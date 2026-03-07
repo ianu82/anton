@@ -106,6 +106,18 @@ uv tool upgrade anton
 uv tool uninstall anton
 ```
 
+## Managed Runtimes
+
+Anton ships managed scratchpad runtime profiles so the default execution environment can be hydrated consistently instead of depending on whatever Python packages happen to be installed on the host.
+
+```
+anton runtime list
+anton runtime install base
+anton runtime install ml
+anton runtime install browser
+anton runtime gc
+```
+
 ### Prerequisites
 
 - **git** — required ([macOS](https://git-scm.com/downloads/mac) / `sudo apt install git` / `winget install Git.Git`)
