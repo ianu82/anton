@@ -35,10 +35,7 @@ def ensure_execution_mode_supported(mode: ExecutionMode | str) -> ExecutionMode:
         return resolved
 
     if sys.platform == "win32":
-        raise RuntimeError(
-            "Execution modes 'workspace_write' and 'read_only' are not supported on Windows yet. "
-            "Use full_trust on Windows."
-        )
+        return resolved
     if sys.platform == "darwin":
         if _find_sandbox_exec() is None:
             raise RuntimeError(

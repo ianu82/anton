@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import anton.scratchpad as scratchpad_module
+from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
 from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
 
 pytestmark = pytest.mark.usefixtures("scratchpad_runtime_override")
@@ -160,6 +161,24 @@ class TestScratchpadEdgeCases:
             assert "warn" in cell.stderr
         finally:
             await pad.close()
+
+    def test_safe_mode_boot_script_uses_overlay_tmp_dir(self, tmp_path):
+        pad = Scratchpad(name="safe")
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        pad._venv_dir = str(overlay)
+        pad._execution_policy = ScratchpadExecutionPolicy(mode=ExecutionMode.READ_ONLY)
+
+        path, sandbox_tmp = pad._write_boot_script()
+        try:
+            assert sandbox_tmp is not None
+            assert Path(path).parent == sandbox_tmp
+            assert sandbox_tmp.is_relative_to(overlay)
+            assert pad._sandbox_tmp_dir == str(sandbox_tmp)
+        finally:
+            pad._boot_path = path
+            pad._cleanup_boot_artifacts()
+            assert not sandbox_tmp.exists()
 
 
 class TestScratchpadManager:
