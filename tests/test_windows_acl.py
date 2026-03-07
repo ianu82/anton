@@ -19,7 +19,7 @@ class TestWindowsAcl:
         assert command == [
             "icacls",
             str(directory.resolve()),
-            "/grant",
+            "/grant:r",
             "(OI)(CI)(RX)",
             "/t",
             "/c",
@@ -53,7 +53,7 @@ class TestWindowsAcl:
             [
                 "icacls",
                 str(directory.resolve()),
-                "/grant",
+                "/grant:r",
                 "*S-1-15-2-123:(OI)(CI)(M)",
                 "/t",
                 "/c",
