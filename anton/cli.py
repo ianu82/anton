@@ -10,6 +10,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from anton import __version__
+from anton.execution_policy import ExecutionMode
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +196,11 @@ def main(
     folder: str | None = typer.Option(
         None, "--folder", "-f", help="Workspace folder (defaults to cwd)"
     ),
+    execution_mode: str | None = typer.Option(
+        None,
+        "--execution-mode",
+        help="Execution mode: full_trust, workspace_write, or read_only.",
+    ),
     resume: bool = typer.Option(
         False, "--resume", "-r", help="Resume a previous chat session"
     ),
@@ -206,6 +212,11 @@ def main(
 
     settings = AntonSettings()
     settings.resolve_workspace(folder)
+    if execution_mode is not None:
+        try:
+            settings.execution_mode = ExecutionMode.coerce(execution_mode)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--execution-mode") from exc
 
     from anton.updater import check_and_update
     check_and_update(console, settings)
@@ -216,10 +227,16 @@ def main(
     if ctx.invoked_subcommand is None:
         from anton.channel.branding import render_banner
         from anton.chat import run_chat
+        from anton.sandbox import ensure_execution_mode_supported
 
         render_banner(console)
         _ensure_workspace(settings)
         _ensure_api_key(settings)
+        try:
+            settings.execution_mode = ensure_execution_mode_supported(settings.execution_mode)
+        except RuntimeError as exc:
+            console.print(f"[anton.error]{exc}[/]")
+            raise typer.Exit(1)
         run_chat(console, settings, resume=resume)
 
 

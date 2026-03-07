@@ -16,12 +16,14 @@ from anton.execution_policy import ExecutionMode, ScratchpadExecutionPolicy
 from anton.runtime import (
     default_runtime_profile,
     ensure_runtime,
+    is_runtime_installed,
     load_runtime_profile,
     log_package_event,
     runtime_lock_hash,
     runtime_packages_for_profile,
     runtime_site_packages_path,
 )
+from anton.sandbox import build_sandbox_launch
 
 _CELL_TIMEOUT_DEFAULT = 120        # Default total timeout when no estimate given
 _CELL_INACTIVITY_TIMEOUT = 30      # Max silence between output lines before killing
@@ -106,6 +108,12 @@ class Scratchpad:
             self._venv_python = os.path.join(self._venv_dir, "bin", "python")
 
     def _ensure_runtime_profile(self) -> None:
+        if self._execution_policy.mode is not ExecutionMode.FULL_TRUST and not is_runtime_installed(self._profile):
+            raise RuntimeError(
+                f"Managed runtime profile '{self._profile}' is not installed for "
+                f"execution mode '{self._execution_policy.mode.value}'. "
+                f"Run 'anton runtime install {self._profile}' in full_trust first."
+            )
         self._runtime_path = ensure_runtime(self._profile, workspace_path=self._workspace_path)
         self._runtime_lock_hash = runtime_lock_hash(load_runtime_profile(self._profile))
 
@@ -280,11 +288,23 @@ class Scratchpad:
             anton_root=Path(__file__).resolve().parent.parent,
             uv_path=uv,
         )
+        if self._execution_policy.mode is not ExecutionMode.FULL_TRUST:
+            env["TMPDIR"] = self._venv_dir
+            env["TMP"] = self._venv_dir
+            env["TEMP"] = self._venv_dir
+        launch = build_sandbox_launch(
+            self._execution_policy.mode,
+            executable=self._venv_python,
+            args=[path],
+            workspace_path=self._workspace_path,
+            overlay_dir=Path(self._venv_dir),
+            runtime_path=self._runtime_path,
+            extra_write_paths=[Path(path).resolve().parent],
+        )
 
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                self._venv_python,
-                path,
+                *launch.argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

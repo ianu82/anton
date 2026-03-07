@@ -333,6 +333,11 @@ def runtime_packages_for_profile(profile_name: str) -> list[str]:
     return [_package_name(spec) for spec in load_runtime_profile(profile_name).packages]
 
 
+def is_runtime_installed(profile_name: str) -> bool:
+    profile = load_runtime_profile(profile_name)
+    return runtime_metadata_path(runtime_dir(profile)).is_file()
+
+
 def suggest_package_for_import(import_name: str) -> tuple[str, str | None]:
     alias = _KNOWN_IMPORT_ALIASES.get(import_name)
     if alias is not None:

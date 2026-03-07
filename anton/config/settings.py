@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic import PrivateAttr
 from pydantic_settings import BaseSettings
 
+from anton.execution_policy import ExecutionMode
+
 
 def _build_env_files() -> list[str]:
     """Build .env loading chain: cwd/.env -> .anton/.env -> ~/.anton/.env"""
@@ -47,6 +49,7 @@ class AntonSettings(BaseSettings):
     theme: str = "auto"
 
     disable_autoupdates: bool = False
+    execution_mode: ExecutionMode = ExecutionMode.FULL_TRUST
 
     # Minds datasource integration
     minds_api_key: str | None = None

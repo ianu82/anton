@@ -6,36 +6,41 @@ from pathlib import Path
 import pytest
 
 from anton.config.settings import AntonSettings
+from anton.execution_policy import ExecutionMode
 
 
 class TestAntonSettingsDefaults:
     def test_default_planning_provider(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.planning_provider == "anthropic"
 
     def test_default_planning_model(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.planning_model == "claude-sonnet-4-6"
 
     def test_default_coding_provider(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.coding_provider == "anthropic"
 
     def test_default_coding_model(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.coding_model == "claude-haiku-4-5-20251001"
 
     def test_default_memory_dir(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.memory_dir == ".anton"
 
     def test_default_context_dir(self):
-        s = AntonSettings(anthropic_api_key="test")
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
         assert s.context_dir == ".anton/context"
 
     def test_default_api_key_is_none(self):
         s = AntonSettings(_env_file=None)
         assert s.anthropic_api_key is None
+
+    def test_default_execution_mode(self):
+        s = AntonSettings(anthropic_api_key="test", _env_file=None)
+        assert s.execution_mode is ExecutionMode.FULL_TRUST
 
 
 class TestAntonSettingsEnvOverride:
@@ -48,6 +53,11 @@ class TestAntonSettingsEnvOverride:
         monkeypatch.setenv("ANTON_ANTHROPIC_API_KEY", "sk-test-key")
         s = AntonSettings(_env_file=None)
         assert s.anthropic_api_key == "sk-test-key"
+
+    def test_env_overrides_execution_mode(self, monkeypatch):
+        monkeypatch.setenv("ANTON_EXECUTION_MODE", "read_only")
+        s = AntonSettings(_env_file=None)
+        assert s.execution_mode is ExecutionMode.READ_ONLY
 
 class TestWorkspaceResolution:
     def test_resolve_workspace_defaults_to_cwd(self, tmp_path, monkeypatch):

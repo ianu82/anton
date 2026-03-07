@@ -750,7 +750,8 @@ def _build_runtime_context(settings: AntonSettings) -> str:
         f"- Planning model: {settings.planning_model}\n"
         f"- Coding model: {settings.coding_model}\n"
         f"- Workspace: {settings.workspace_path}\n"
-        f"- Memory mode: {settings.memory_mode}"
+        f"- Memory mode: {settings.memory_mode}\n"
+        f"- Execution mode: {settings.execution_mode.value}"
     )
     _ds = getattr(settings, "minds_datasource", None)
     _ds_key = getattr(settings, "minds_api_key", None)
@@ -809,6 +810,7 @@ def _rebuild_session(
         coding_api_key=api_key,
         history_store=history_store,
         session_id=session_id,
+        execution_mode=settings.execution_mode,
     )
 
 
@@ -1731,6 +1733,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
         coding_api_key=coding_api_key,
         history_store=history_store,
         session_id=current_session_id,
+        execution_mode=settings.execution_mode,
     )
 
     # Handle --resume flag at startup

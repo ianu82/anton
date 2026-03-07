@@ -97,6 +97,7 @@ class ScratchpadExecutionPolicy:
                 if key in source_env:
                     env[key] = source_env[key]
             env.update(self.granted_env)
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         if coding_model:
             env["ANTON_SCRATCHPAD_MODEL"] = coding_model
@@ -142,8 +143,13 @@ class ScratchpadExecutionPolicy:
                 "Execution mode is full_trust. Scratchpads inherit Anton's normal local process "
                 "privileges and broad ambient environment access."
             )
+        workspace_access = (
+            "workspace read/write access"
+            if self.mode is ExecutionMode.WORKSPACE_WRITE
+            else "workspace read-only access"
+        )
         return (
-            f"Execution mode is {self.mode.value}. Some installs, env vars, secrets, or helper "
-            "capabilities may be unavailable; adapt to policy feedback instead of assuming "
-            "full machine access."
+            f"Execution mode is {self.mode.value}. Scratchpads run with {workspace_access}, "
+            "no network, no ambient secrets, and no generic package installs. Adapt to policy "
+            "feedback instead of assuming full machine access."
         )
