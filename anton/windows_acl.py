@@ -17,7 +17,7 @@ def _grant_spec(path: Path, access: str, recursive: bool) -> tuple[list[str], bo
     else:
         raise ValueError(f"Unsupported Windows access grant: {access}")
 
-    args = ["icacls", str(resolved), "/grant", rights]
+    args = ["icacls", str(resolved), "/grant:r", rights]
     if recursive and is_dir:
         args.extend(["/t", "/c", "/q"])
     return args, is_dir
