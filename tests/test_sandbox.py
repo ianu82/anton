@@ -85,6 +85,9 @@ class TestSandboxSupport:
 
         assert spec.argv[0] == "/usr/bin/sandbox-exec"
         assert "(deny network*)" in spec.profile_text
+        assert "(allow file-read-metadata)" in spec.profile_text
+        assert "(allow file-read-data\n" in spec.profile_text
+        assert '(subpath "' in spec.profile_text
         assert f'(subpath "{workspace.resolve()}")' in spec.profile_text
 
     def test_linux_launch_uses_bwrap(self, monkeypatch, tmp_path):
@@ -115,6 +118,41 @@ class TestSandboxSupport:
     reason="sandbox-exec integration is only available on macOS hosts with sandbox-exec",
 )
 class TestDarwinSandboxIntegration:
+    def test_read_only_blocks_outside_workspace_reads(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        overlay = tmp_path / "overlay"
+        workspace.mkdir()
+        overlay.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("top-secret", encoding="utf-8")
+
+        code = (
+            "from pathlib import Path; import sys\n"
+            "target = Path(sys.argv[1])\n"
+            "try:\n"
+            "    print(target.read_text())\n"
+            "except Exception as exc:\n"
+            "    print(type(exc).__name__)\n"
+        )
+        spec = build_sandbox_launch(
+            ExecutionMode.READ_ONLY,
+            executable=sys.executable,
+            args=["-c", code, str(outside)],
+            workspace_path=workspace,
+            overlay_dir=overlay,
+        )
+        result = subprocess.run(
+            spec.argv,
+            capture_output=True,
+            text=True,
+            cwd=str(workspace),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            check=False,
+        )
+
+        assert "top-secret" not in result.stdout
+        assert "PermissionError" in result.stdout or result.returncode != 0
+
     def test_read_only_blocks_workspace_writes(self, tmp_path):
         workspace = tmp_path / "workspace"
         overlay = tmp_path / "overlay"
@@ -142,6 +180,7 @@ class TestDarwinSandboxIntegration:
             spec.argv,
             capture_output=True,
             text=True,
+            cwd=str(workspace),
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             check=False,
         )
@@ -180,6 +219,7 @@ class TestDarwinSandboxIntegration:
             spec.argv,
             capture_output=True,
             text=True,
+            cwd=str(workspace),
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             check=False,
         )

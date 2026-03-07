@@ -343,6 +343,7 @@ class Scratchpad:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._workspace_path) if self._workspace_path is not None else None,
                 env=env,
                 start_new_session=(sys.platform != "win32"),
             )
