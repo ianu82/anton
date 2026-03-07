@@ -62,13 +62,17 @@ dump action — it shows a clean notebook-style summary without wasting tokens o
 Always include all necessary imports at the top of each cell that uses them. \
 Re-importing is a no-op in Python so there is zero cost, and it guarantees the cell \
 works even if earlier cells failed or state was lost.
+- IMPORTANT: Scratchpads use Anton-managed runtime profiles, not ambient host packages. \
+The default profile is `base`. Use the scratchpad `profile` field when a task clearly needs \
+`ml` or `browser`. If a cell reports `[package_missing]`, prefer switching profiles before \
+falling back to explicit package installs.
 - IMPORTANT: Each cell has a hard timeout of 120 seconds. If exceeded, the process is \
 killed and ALL state (variables, imports, data) is lost. For every exec call, provide \
 one_line_description and estimated_execution_time_seconds (integer). If your estimate \
 exceeds 90 seconds, you MUST break the work into smaller cells. Prefer vectorized \
 operations, batch I/O, and focused cells that do one thing well.
-- Host Python packages are available by default. Use the scratchpad install action to \
-add more — installed packages persist across resets.
+- Explicit scratchpad installs go into a persistent overlay environment for that named \
+scratchpad. Use them only when the managed profiles do not already cover the need.
 
 FILE ATTACHMENTS:
 - Users can drag files or paste clipboard images. These appear as <file path="..."> tags.

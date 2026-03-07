@@ -26,6 +26,25 @@ PACKAGE_EVENT_TYPES = {
 
 
 _PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
+_KNOWN_IMPORT_ALIASES = {
+    "PIL": ("Pillow", "base"),
+    "aiohttp": ("aiohttp", "base"),
+    "arrow": ("pyarrow", "base"),
+    "bs4": ("beautifulsoup4", "base"),
+    "duckdb": ("duckdb", "base"),
+    "fitz": ("PyMuPDF", "base"),
+    "httpx": ("httpx", "base"),
+    "lxml": ("lxml", "base"),
+    "openpyxl": ("openpyxl", "base"),
+    "pandas": ("pandas", "base"),
+    "PIL.Image": ("Pillow", "base"),
+    "playwright": ("playwright", "browser"),
+    "plotly": ("plotly", "base"),
+    "pyarrow": ("pyarrow", "base"),
+    "scipy": ("scipy", "base"),
+    "sklearn": ("scikit-learn", "ml"),
+    "statsmodels": ("statsmodels", "base"),
+}
 
 
 @dataclass(frozen=True)
@@ -315,6 +334,20 @@ def runtime_packages_for_profile(profile_name: str) -> list[str]:
     return [_package_name(spec) for spec in load_runtime_profile(profile_name).packages]
 
 
+def suggest_package_for_import(import_name: str) -> tuple[str, str | None]:
+    alias = _KNOWN_IMPORT_ALIASES.get(import_name)
+    if alias is not None:
+        return alias
+
+    normalized = import_name.split(".", 1)[0]
+    for profile in list_runtime_profiles():
+        for spec in profile.packages:
+            package_name = _package_name(spec)
+            if package_name == normalized.lower():
+                return spec.split("==", 1)[0], profile.name
+    return normalized, None
+
+
 def default_runtime_profile() -> str:
     return "base"
 
@@ -361,16 +394,50 @@ def _write_runtime_metadata(profile: RuntimeProfile, target: Path) -> None:
     runtime_metadata_path(target).write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _hydrate_test_runtime(profile: RuntimeProfile, target: Path, site_packages_value: str) -> Path:
+    target.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        python_path = target / "Scripts" / "python.exe"
+    else:
+        python_path = target / "bin" / "python"
+    python_path.parent.mkdir(parents=True, exist_ok=True)
+    if not python_path.exists():
+        try:
+            python_path.symlink_to(Path(sys.executable))
+        except OSError:
+            shutil.copy2(sys.executable, python_path)
+
+    site_target = target / "lib" / "anton-test" / "site-packages"
+    site_target.parent.mkdir(parents=True, exist_ok=True)
+    if site_target.exists() or site_target.is_symlink():
+        if site_target.is_symlink() or site_target.is_file():
+            site_target.unlink()
+        else:
+            shutil.rmtree(site_target)
+    site_target.mkdir(parents=True, exist_ok=True)
+    for raw_path in site_packages_value.split(os.pathsep):
+        source_dir = Path(raw_path).expanduser()
+        if not source_dir.is_dir():
+            continue
+        for child in source_dir.iterdir():
+            target_child = site_target / child.name
+            if target_child.exists() or target_child.is_symlink():
+                continue
+            try:
+                target_child.symlink_to(child, target_is_directory=child.is_dir())
+            except OSError:
+                if child.is_file():
+                    shutil.copy2(child, target_child)
+    _write_runtime_metadata(profile, target)
+    return target
+
+
 def ensure_runtime(profile_name: str, *, workspace_path: str | Path | None = None) -> Path:
     profile = load_runtime_profile(profile_name)
     target = runtime_dir(profile)
     metadata_path = runtime_metadata_path(target)
     if metadata_path.is_file():
         return target
-
-    uv = _find_uv()
-    if uv is None:
-        raise RuntimeError("uv is required to hydrate Anton runtimes.")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.mkdir(parents=True, exist_ok=True)
@@ -382,6 +449,14 @@ def ensure_runtime(profile_name: str, *, workspace_path: str | Path | None = Non
     )
 
     try:
+        test_site_packages = os.environ.get("ANTON_RUNTIME_TEST_SITE_PACKAGES")
+        if test_site_packages:
+            return _hydrate_test_runtime(profile, target, test_site_packages)
+
+        uv = _find_uv()
+        if uv is None:
+            raise RuntimeError("uv is required to hydrate Anton runtimes.")
+
         create_result = _run_command(
             [uv, "venv", str(target), "--python", sys.executable, "--seed", "--quiet"],
             timeout=180,

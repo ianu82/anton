@@ -191,7 +191,7 @@ class ChatSession:
 
     def _build_tools(self) -> list[dict]:
         scratchpad_tool = dict(SCRATCHPAD_TOOL)
-        pkg_list = self._scratchpads._available_packages
+        pkg_list = self._scratchpads.available_packages()
         if pkg_list:
             notable = sorted(
                 p for p in pkg_list
@@ -199,9 +199,15 @@ class ChatSession:
             )
             if notable:
                 pkg_line = ", ".join(notable)
-                extra = f"\n\nInstalled packages ({len(pkg_list)} total, notable: {pkg_line})."
+                extra = (
+                    f"\n\nManaged runtime packages ({len(pkg_list)} total in the default profile, "
+                    f"notable: {pkg_line})."
+                )
             else:
-                extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
+                extra = (
+                    f"\n\nManaged runtime packages: {len(pkg_list)} total in the default profile "
+                    "(plus any explicit overlay installs)."
+                )
             scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
 
         tools = [scratchpad_tool]
@@ -811,7 +817,7 @@ def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> li
 
 
 async def _ensure_clipboard(console: Console) -> bool:
-    """Check clipboard support; offer to install Pillow if missing.
+    """Check clipboard support.
 
     Returns True if clipboard is ready to use, False otherwise.
     """
@@ -823,38 +829,8 @@ async def _ensure_clipboard(console: Console) -> bool:
         return False
     # reason == "missing_pillow"
     console.print("[anton.muted]Clipboard image support requires Pillow.[/]")
-    answer = console.input("[bold]Install Pillow now? (y/n):[/] ").strip().lower()
-    if answer not in ("y", "yes"):
-        console.print("[anton.muted]Skipped.[/]")
-        return False
-    console.print("[anton.muted]Installing Pillow...[/]")
-    import subprocess
-    proc = await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: subprocess.run(
-            ["uv", "pip", "install", "--python", sys.executable, "Pillow"],
-            capture_output=True,
-            timeout=120,
-        ),
-    )
-    if proc.returncode == 0:
-        console.print("[anton.success]Pillow installed. Clipboard is now available.[/]")
-        return True
-    else:
-        # Fallback: try pip directly
-        proc = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: subprocess.run(
-                [sys.executable, "-m", "pip", "install", "Pillow"],
-                capture_output=True,
-                timeout=120,
-            ),
-        )
-        if proc.returncode == 0:
-            console.print("[anton.success]Pillow installed. Clipboard is now available.[/]")
-            return True
-        console.print("[anton.error]Failed to install Pillow.[/]")
-        return False
+    console.print("[anton.muted]Reinstall Anton with Pillow available in the main runtime to use /paste.[/]")
+    return False
 
 
 def _human_size(nbytes: int) -> str:
