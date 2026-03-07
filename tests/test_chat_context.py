@@ -323,7 +323,7 @@ class TestRuntimeContext:
         assert "may be available in os.environ" in description
         assert "Execution policy:" in description
 
-    async def test_read_only_system_prompt_reports_helpers_unavailable(self):
+    async def test_read_only_system_prompt_keeps_brokered_minds_helper_available(self):
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hello!"))
 
@@ -331,6 +331,9 @@ class TestRuntimeContext:
             mock_llm,
             runtime_context="",
             execution_mode=ExecutionMode.READ_ONLY,
+            minds_url="https://mdb.ai",
+            minds_api_key="minds-key",
+            minds_datasource="warehouse",
         )
         await session.turn("hi")
 
@@ -338,14 +341,23 @@ class TestRuntimeContext:
         system_prompt = call_kwargs.kwargs.get("system", "")
         assert "get_llm()" in system_prompt
         assert "unavailable in this execution mode" in system_prompt
+        assert "query_minds_data()" in system_prompt
+        assert "brokered Minds helper" in system_prompt
 
-    def test_read_only_tool_description_reports_helpers_unavailable(self):
-        session = ChatSession(AsyncMock(), runtime_context="", execution_mode=ExecutionMode.READ_ONLY)
+    def test_read_only_tool_description_keeps_brokered_minds_helper_available(self):
+        session = ChatSession(
+            AsyncMock(),
+            runtime_context="",
+            execution_mode=ExecutionMode.READ_ONLY,
+            minds_url="https://mdb.ai",
+            minds_api_key="minds-key",
+            minds_datasource="warehouse",
+        )
         scratchpad_tool = next(tool for tool in session._build_tools() if tool["name"] == "scratchpad")
         description = scratchpad_tool["description"]
         assert "Helper capabilities:" in description
         assert "query_minds_data()" in description
-        assert "unavailable in this execution mode" in description
+        assert "brokered Minds helper" in description
 
     def test_runtime_context_hides_query_minds_data_in_read_only(self):
         settings = AntonSettings(
