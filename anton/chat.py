@@ -787,6 +787,11 @@ def _build_runtime_context(settings: AntonSettings) -> str:
     return ctx
 
 
+def _chat_execution_mode_line(settings: AntonSettings) -> str:
+    mode = ExecutionMode.coerce(settings.execution_mode)
+    return f"{mode.value} mode. To change this, type /setup"
+
+
 def _rebuild_session(
     *,
     settings: AntonSettings,
@@ -828,6 +833,40 @@ def _rebuild_session(
         session_id=session_id,
         execution_mode=settings.execution_mode,
     )
+
+
+async def _restart_session_with_history(
+    *,
+    settings: AntonSettings,
+    state: dict,
+    self_awareness,
+    cortex,
+    workspace,
+    console: Console,
+    session: ChatSession,
+    episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+    session_id: str | None = None,
+) -> ChatSession:
+    history = list(session.history)
+    turn_count = sum(1 for m in history if m.get("role") == "user")
+
+    await session.close()
+
+    new_session = _rebuild_session(
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        cortex=cortex,
+        workspace=workspace,
+        console=console,
+        episodic=episodic,
+        history_store=history_store,
+        session_id=session_id,
+    )
+    new_session._history = history
+    new_session._turn_count = turn_count
+    return new_session
 
 
 def _handle_memory(
@@ -1013,7 +1052,7 @@ async def _handle_setup(
     history_store: HistoryStore | None = None,
     session_id: str | None = None,
 ) -> ChatSession:
-    """Interactive setup wizard with sub-menu: Models, Memory, or Minds."""
+    """Interactive setup wizard with sub-menu: Minds, Memory, or execution mode."""
     from rich.prompt import Prompt
 
     console.print()
@@ -1022,12 +1061,15 @@ async def _handle_setup(
     console.print("  What do you want to configure?")
     console.print("    [bold]1[/]  Datasource — connect to datasource via Minds")
     console.print("    [bold]2[/]  Memory — memory mode and episodic memory")
+    console.print(
+        f"    [bold]3[/]  Execution mode — default is [bold]{settings.execution_mode.value}[/]"
+    )
     console.print("    [bold]q[/]  Back")
     console.print()
 
     top_choice = Prompt.ask(
         "Select",
-        choices=["1", "2", "q"],
+        choices=["1", "2", "3", "q"],
         default="q",
         console=console,
     )
@@ -1040,9 +1082,22 @@ async def _handle_setup(
             console, settings, workspace, state,
             self_awareness, cortex, session, episodic=episodic,
         )
-    else:
+    elif top_choice == "2":
         _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
         return session
+    else:
+        return await _handle_setup_execution_mode(
+            console,
+            settings,
+            workspace,
+            state,
+            self_awareness,
+            cortex,
+            session,
+            episodic=episodic,
+            history_store=history_store,
+            session_id=session_id,
+        )
 
 
 async def _handle_setup_models(
@@ -1234,6 +1289,103 @@ def _handle_setup_memory(
     console.print()
     console.print("[anton.success]Configuration updated.[/]")
     console.print()
+
+
+async def _handle_setup_execution_mode(
+    console: Console,
+    settings: AntonSettings,
+    workspace: Workspace,
+    state: dict,
+    self_awareness,
+    cortex,
+    session: ChatSession,
+    episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+    session_id: str | None = None,
+) -> ChatSession:
+    """Setup sub-menu: default execution mode."""
+    from rich.prompt import Prompt
+
+    from anton.sandbox import ensure_execution_mode_supported
+    from anton.workspace import Workspace as _Workspace
+
+    console.print()
+    console.print("[anton.cyan]Execution mode[/]")
+    console.print()
+    console.print("  Current default execution mode:")
+    console.print(f"    [bold]{settings.execution_mode.value}[/]")
+    console.print()
+    console.print("  Available modes:")
+    console.print(
+        r"    [bold]1[/]  full_trust — broad local privileges and ambient environment access "
+        r"[dim]\[default][/]"
+    )
+    console.print(
+        r"    [bold]2[/]  workspace_write — workspace read/write, no network, no ambient secrets "
+        r"[dim]\[sandboxed][/]"
+    )
+    console.print(
+        r"    [bold]3[/]  read_only — workspace read-only, no network, no ambient secrets "
+        r"[dim]\[sandboxed][/]"
+    )
+    console.print()
+
+    mode_map = {
+        "1": ExecutionMode.FULL_TRUST,
+        "2": ExecutionMode.WORKSPACE_WRITE,
+        "3": ExecutionMode.READ_ONLY,
+    }
+    current_mode_num = {
+        ExecutionMode.FULL_TRUST: "1",
+        ExecutionMode.WORKSPACE_WRITE: "2",
+        ExecutionMode.READ_ONLY: "3",
+    }.get(ExecutionMode.coerce(settings.execution_mode), "1")
+    mode_choice = Prompt.ask(
+        "  Default execution mode",
+        choices=["1", "2", "3"],
+        default=current_mode_num,
+        console=console,
+    )
+    selected_mode = mode_map[mode_choice]
+
+    try:
+        resolved_mode = ensure_execution_mode_supported(selected_mode)
+    except RuntimeError as exc:
+        console.print()
+        console.print(f"[anton.error]{exc}[/]")
+        console.print()
+        return session
+
+    global_ws = _Workspace(Path.home())
+    previous_mode = ExecutionMode.coerce(settings.execution_mode)
+    settings.execution_mode = resolved_mode
+    global_ws.set_secret("ANTON_EXECUTION_MODE", resolved_mode.value)
+
+    console.print()
+    console.print("[anton.success]Default execution mode updated.[/]")
+    if previous_mode is resolved_mode:
+        console.print("[anton.muted]Current chat already uses this mode.[/]")
+        console.print()
+        return session
+
+    console.print(
+        "[anton.muted]Anton must restart the current chat session to apply the new "
+        "execution mode. Existing scratchpads will be closed; conversation history "
+        "will be preserved.[/]"
+    )
+    console.print()
+    return await _restart_session_with_history(
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        cortex=cortex,
+        workspace=workspace,
+        console=console,
+        session=session,
+        episodic=episodic,
+        history_store=history_store,
+        session_id=session_id,
+    )
 
 
 def _normalize_minds_url(url: str) -> str:
@@ -1556,7 +1708,7 @@ def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/setup[/]       — Configure datasources and memory settings")
+    console.print("  [bold]/setup[/]       — Configure datasource, memory, and execution mode")
     console.print("  [bold]/memory[/]      — Show memory status dashboard")
     console.print("  [bold]/paste[/]       — Attach clipboard image to your message")
     console.print("  [bold]/resume[/]      — Resume a previous chat session")
@@ -1764,6 +1916,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
 
 
     console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
+    console.print(f"[anton.muted] {_chat_execution_mode_line(settings)}[/]")
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
