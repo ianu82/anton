@@ -66,6 +66,8 @@ works even if earlier cells failed or state was lost.
 The default profile is `base`. Use the scratchpad `profile` field when a task clearly needs \
 `ml` or `browser`. If a cell reports `[package_missing]`, prefer switching profiles before \
 falling back to explicit package installs.
+- IMPORTANT: Scratchpad capabilities are execution-mode dependent. In safer modes, explicit \
+package installs and ambient secrets may be unavailable even if they work in `full_trust`.
 - IMPORTANT: Each cell has a hard timeout of 120 seconds. If exceeded, the process is \
 killed and ALL state (variables, imports, data) is lost. For every exec call, provide \
 one_line_description and estimated_execution_time_seconds (integer). If your estimate \

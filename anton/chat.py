@@ -24,6 +24,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
+from anton.execution import ExecutionMode, ScratchpadExecutionPolicy, parse_execution_mode
 from anton.llm.prompts import CHAT_SYSTEM_PROMPT
 from anton.llm.provider import (
     StreamComplete,
@@ -88,6 +89,7 @@ class ChatSession:
         tool_gate: ToolGate | None = None,
         usage_hook: UsageHook | None = None,
         audit_hook: AuditHook | None = None,
+        execution_mode: str | ExecutionMode = ExecutionMode.FULL_TRUST,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -99,6 +101,8 @@ class ChatSession:
         self._tool_gate = tool_gate
         self._usage_hook = usage_hook
         self._audit_hook = audit_hook
+        self._execution_mode = parse_execution_mode(execution_mode)
+        self._scratchpad_policy = ScratchpadExecutionPolicy(self._execution_mode)
         self._history: list[dict] = []
         self._scratchpads = ScratchpadManager(
             coding_provider=coding_provider,
@@ -106,6 +110,7 @@ class ChatSession:
             coding_api_key=coding_api_key,
             secret_handler=self._make_secret_handler(),
             workspace_path=workspace.base if workspace is not None else None,
+            execution_mode=self._execution_mode,
         )
 
     def configure_run_hooks(
