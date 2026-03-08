@@ -789,6 +789,17 @@ def _chat_execution_mode_line(settings: AntonSettings) -> str:
     return f"{mode.value} mode. To change this, type /setup"
 
 
+def _read_user_prompt_sync(console: Console) -> str:
+    """Render the Anton prompt with Rich styling, then read a line."""
+    console.print("[anton.cyan]you>[/]", end=" ")
+    return console.input("")
+
+
+async def _read_user_prompt(console: Console) -> str:
+    """Read the idle chat prompt without prompt_toolkit redraw behavior."""
+    return await asyncio.to_thread(_read_user_prompt_sync, console)
+
+
 def _rebuild_session(
     *,
     settings: AntonSettings,
@@ -1995,12 +2006,6 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
 
     display = StreamDisplay(console)
 
-    from prompt_toolkit import PromptSession
-
-    prompt_session: PromptSession[str] = PromptSession(
-        mouse_support=False,
-    )
-
     try:
         while True:
             # Memory confirmation UX — show pending lessons before prompt
@@ -2033,9 +2038,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 console.print()
 
             try:
-                user_input = await prompt_session.prompt_async(
-                    [("bold fg:#00ff9f", "you>"), ("", " ")]
-                )
+                user_input = await _read_user_prompt(console)
             except EOFError:
                 break
 
