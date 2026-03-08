@@ -5,6 +5,7 @@ import socket
 import urllib.error
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import call
 
 import pytest
 
@@ -12,10 +13,11 @@ from anton.chat import (
     ChatSession,
     _build_runtime_context,
     _chat_execution_mode_line,
-    _format_bottom_toolbar,
     _describe_minds_connection_error,
     _handle_setup_execution_mode,
     _handle_setup_minds,
+    _read_user_prompt,
+    _read_user_prompt_sync,
 )
 from anton.config.settings import AntonSettings
 from anton.tools import MEMORIZE_TOOL
@@ -395,12 +397,29 @@ class TestExecutionModeSetup:
 
         assert _chat_execution_mode_line(settings) == "workspace_write mode. To change this, type /setup"
 
-    def test_bottom_toolbar_does_not_prefix_newline(self):
-        rendered = _format_bottom_toolbar("working", "stats", width=30)
 
-        assert rendered
-        assert not rendered.startswith("\n")
-        assert rendered.startswith("working")
+class TestIdlePrompt:
+    def test_read_user_prompt_sync_renders_styled_prompt(self):
+        console = MagicMock()
+        console.input.return_value = "hello"
+
+        result = _read_user_prompt_sync(console)
+
+        assert result == "hello"
+        assert console.method_calls == [
+            call.print("[anton.cyan]you>[/]", end=" "),
+            call.input(""),
+        ]
+
+    async def test_read_user_prompt_uses_console_input(self):
+        console = MagicMock()
+        console.input.return_value = "hello"
+
+        result = await _read_user_prompt(console)
+
+        assert result == "hello"
+        console.print.assert_called_once_with("[anton.cyan]you>[/]", end=" ")
+        console.input.assert_called_once_with("")
 
     async def test_setup_execution_mode_persists_default_and_restarts_when_changed(
         self,

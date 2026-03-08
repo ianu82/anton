@@ -789,13 +789,15 @@ def _chat_execution_mode_line(settings: AntonSettings) -> str:
     return f"{mode.value} mode. To change this, type /setup"
 
 
-def _format_bottom_toolbar(status: str, stats: str, *, width: int) -> str:
-    if not stats and not status:
-        return ""
-    gap = width - len(status) - len(stats)
-    if gap < 1:
-        gap = 1
-    return status + " " * gap + stats
+def _read_user_prompt_sync(console: Console) -> str:
+    """Render the Anton prompt with Rich styling, then read a line."""
+    console.print("[anton.cyan]you>[/]", end=" ")
+    return console.input("")
+
+
+async def _read_user_prompt(console: Console) -> str:
+    """Read the idle chat prompt without prompt_toolkit redraw behavior."""
+    return await asyncio.to_thread(_read_user_prompt_sync, console)
 
 
 def _rebuild_session(
@@ -2002,34 +2004,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
 
     from anton.chat_ui import StreamDisplay
 
-    toolbar = {"stats": "", "status": ""}
-    display = StreamDisplay(console, toolbar=toolbar)
-
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.formatted_text import HTML
-    from prompt_toolkit.styles import Style as PTStyle
-
-    def _bottom_toolbar():
-        stats = toolbar["stats"]
-        status = toolbar["status"]
-        if not stats and not status:
-            return ""
-        try:
-            width = os.get_terminal_size().columns
-        except OSError:
-            width = 80
-        line = _format_bottom_toolbar(status, stats, width=width)
-        return HTML(f"<style fg='#555570'>{line}</style>")
-
-    pt_style = PTStyle.from_dict({
-        "bottom-toolbar": "noreverse nounderline bg:default",
-    })
-
-    prompt_session: PromptSession[str] = PromptSession(
-        mouse_support=False,
-        bottom_toolbar=_bottom_toolbar,
-        style=pt_style,
-    )
+    display = StreamDisplay(console)
 
     try:
         while True:
@@ -2063,9 +2038,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 console.print()
 
             try:
-                user_input = await prompt_session.prompt_async(
-                    [("bold fg:#00ff9f", "you>"), ("", " ")]
-                )
+                user_input = await _read_user_prompt(console)
             except EOFError:
                 break
 
@@ -2192,9 +2165,9 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 parts = [f"{elapsed:.1f}s", f"{total_input} in / {total_output} out"]
                 if ttft is not None:
                     parts.append(f"TTFT {int(ttft * 1000)}ms")
-                toolbar["stats"] = "  ".join(parts)
-                toolbar["status"] = ""
                 display.finish()
+                console.print(f"[anton.muted]{'  '.join(parts)}[/]")
+                console.print()
             except anthropic.AuthenticationError:
                 display.abort()
                 console.print()
